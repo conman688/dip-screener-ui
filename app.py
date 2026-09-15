@@ -232,6 +232,7 @@ def run_cycle():
         }
 
         status = core.evaluate_token(history, meta, cfg_snapshot, now, all_time_high_price)
+        status["platform"] = best.get("dexId", "")
         new_status[key] = status
 
         if status["score"] >= cfg_snapshot.get("alert_score_threshold", 70):

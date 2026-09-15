@@ -29,8 +29,18 @@ DEXSCREENER_BASE = "https://api.dexscreener.com"
 # sources (boosts, top-boosts, profiles, a rotating set of search queries)
 # and - most importantly - never forgetting a token once it's been seen, so
 # yesterday's find doesn't vanish just because it dropped off a feed today.
+#
+# None of this is chain-restricted - fetch_latest_boosted/fetch_top_boosted/
+# fetch_latest_profiles already return whatever chain DexScreener tracks
+# (confirmed live: a search for "pons" turned up chainId "robinhood" pairs
+# on Uniswap, no code change needed for that). The launchpad/chain terms
+# below (pumpfun/stonkfun/pons, ethereum/weth) exist to make sure those
+# specific corners get search-query coverage too, not because discovery was
+# ever scoped to one chain - DexScreener's search matches token name/symbol,
+# not launchpad, so this is a best-effort widening, not a guarantee.
 SEARCH_QUERY_ROTATION = [
     "solana", "pump", "sol", "meme", "moon", "inu", "cat", "dog", "ai",
+    "pumpfun", "stonkfun", "pons", "ethereum", "weth",
 ]
 
 

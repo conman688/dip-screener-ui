@@ -284,6 +284,7 @@ function renderTable() {
         </td>
         <td>
           <div class="token-label">${escapeHtml(t.label)}</div>
+          <span class="token-chain">${escapeHtml(t.chain_id)}${t.platform ? ' · ' + escapeHtml(t.platform) : ''}</span>
           ${t.url ? `<a class="token-link" href="${escapeHtml(t.url)}" target="_blank" rel="noopener">view chart</a>` : ''}
         </td>
         <td class="num">

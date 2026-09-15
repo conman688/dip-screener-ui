@@ -402,6 +402,14 @@ body {
 }
 .token-link:hover { color: var(--text-dim); }
 
+.token-chain {
+  display: block;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-family: var(--font-mono);
+  text-transform: lowercase;
+}
+
 .pct-up { color: var(--gain); }
 .pct-down { color: var(--dip); }
 
