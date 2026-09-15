@@ -3,6 +3,7 @@
   "auto_discover": true,
   "eligibility_min_liquidity_usd": 2000,
   "eligibility_min_volume_24h_usd": 500,
+  "eligibility_min_volume_5m_usd": 5000,
   "eligibility_min_market_cap_usd": 10000,
   "eligibility_max_market_cap_usd": 100000000,
   "min_age_hours": 0,

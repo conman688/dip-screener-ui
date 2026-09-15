@@ -14,7 +14,7 @@
 <header class="topbar">
   <div class="brand">
     <h1>Dip Screener</h1>
-    <p class="tagline">Watching for coins that dipped hard and bounced back</p>
+    <p class="tagline">Watching for coins dipping hard, right now — before the bounce</p>
   </div>
 
   <div class="controls">
@@ -78,7 +78,7 @@
         <button class="btn btn-ghost btn-small" id="filter-reset-btn">Reset</button>
       </div>
     </div>
-    <p class="field-hint filter-note">These narrow what's shown. Drawdown depth, volume retention, and buy/sell momentum are scoring inputs now, not hard filters — see Score below and the breakdown on each row.</p>
+    <p class="field-hint filter-note">These narrow what's shown. Drawdown depth, volume retention, and buy/sell momentum are scoring inputs now, not hard filters — see Score below and the breakdown on each row. Every row here already cleared the 5-minute volume + live-buy-activity floor in Settings, so dead pools shouldn't show up at all.</p>
 
     <div class="table-scroll">
       <table class="token-table">
@@ -94,12 +94,13 @@
             <th class="sortable num" data-sort="bounce_pct">Bounce off low</th>
             <th class="sortable num" data-sort="age_hours">Age</th>
             <th class="sortable num" data-sort="liquidity_usd">Liquidity</th>
+            <th class="sortable num" data-sort="volume_5m_usd" title="Must clear the 5-minute volume floor in Settings to show up at all">5m Vol</th>
             <th class="sortable num" data-sort="volume24h_usd">24h Vol</th>
           </tr>
         </thead>
         <tbody id="token-rows">
           <tr class="empty-row">
-            <td colspan="11">No tokens tracked yet. Turn on auto-discover, or add one directly below.</td>
+            <td colspan="12">No tokens tracked yet. Turn on auto-discover, or add one directly below.</td>
           </tr>
         </tbody>
       </table>
@@ -224,7 +225,7 @@
           <input type="text" id="cfg-telegram-chat" placeholder="e.g. 987654321">
         </label>
 
-        <p class="field-hint">Eligibility (the bare-minimum liquidity/volume/market-cap floor a token needs to be scored at all) is intentionally loose and lives in config.json directly — it's meant to exclude only obvious dust, not to pre-filter candidates the way the old hard thresholds did.</p>
+        <p class="field-hint">Eligibility (the bare-minimum liquidity/volume/market-cap floor a token needs to be scored at all — including a 5-minute volume floor and a live-buy-activity check, to keep dead pools out) is intentionally loose and lives in config.json directly — it's meant to exclude only obvious dust, not to pre-filter candidates the way the old hard thresholds did.</p>
 
         <div class="form-actions">
           <span class="save-note" id="save-note"></span>

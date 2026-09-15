@@ -242,11 +242,11 @@ function renderTable() {
     + (latestTokens.length !== filtered.length ? ` (of ${latestTokens.length})` : '');
 
   if (latestTokens.length === 0) {
-    tokenRows.innerHTML = '<tr class="empty-row"><td colspan="11">No tokens tracked yet. Turn on auto-discover, or add one directly below.</td></tr>';
+    tokenRows.innerHTML = '<tr class="empty-row"><td colspan="12">No tokens tracked yet. Turn on auto-discover, or add one directly below.</td></tr>';
     return;
   }
   if (filtered.length === 0) {
-    tokenRows.innerHTML = '<tr class="empty-row"><td colspan="11">No tracked tokens match the current filters. Try widening the market cap or age range, or lowering min score.</td></tr>';
+    tokenRows.innerHTML = '<tr class="empty-row"><td colspan="12">No tracked tokens match the current filters. Try widening the market cap or age range, or lowering min score.</td></tr>';
     return;
   }
 
@@ -298,6 +298,7 @@ function renderTable() {
         <td class="num ${bounceClass}">+${t.bounce_pct}%</td>
         <td class="num">${fmtAge(t.age_hours)}</td>
         <td class="num">${fmtMoney(t.liquidity_usd)}</td>
+        <td class="num">${fmtMoney(t.volume_5m_usd)}</td>
         <td class="num">${fmtMoney(t.volume24h_usd)}</td>
       </tr>
     `;

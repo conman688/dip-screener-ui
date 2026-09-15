@@ -300,15 +300,26 @@ def passes_eligibility(meta, cfg):
         return False, "no price"
     liq = meta.get("liquidity_usd", 0)
     vol = meta.get("volume24h_usd", 0)
+    vol_5m = meta.get("volume_5m_usd", 0)
+    buys_5m = meta.get("buys_m5", 0)
     mcap = meta.get("market_cap_usd", 0)
     min_liq = cfg.get("eligibility_min_liquidity_usd", 2000)
     min_vol = cfg.get("eligibility_min_volume_24h_usd", 500)
+    min_vol_5m = cfg.get("eligibility_min_volume_5m_usd", 5000)
     mcap_floor = cfg.get("eligibility_min_market_cap_usd", 10000)
     mcap_ceiling = cfg.get("eligibility_max_market_cap_usd", 100_000_000)
     if liq < min_liq:
         return False, "liquidity below eligibility floor"
     if vol < min_vol:
         return False, "volume below eligibility floor"
+    # A deep drawdown with no real trading behind it is a dead pool, not a
+    # dip - this is the specific "5m/1h volume but no buy volume" complaint
+    # that a 24h-volume floor alone doesn't catch, since a token can coast
+    # on stale 24h volume for hours after trading has actually stopped.
+    if vol_5m < min_vol_5m:
+        return False, "5-minute volume below eligibility floor"
+    if buys_5m <= 0:
+        return False, "no buy activity in the last 5 minutes"
     if mcap and mcap < mcap_floor:
         return False, "market cap below eligibility floor"
     if mcap and mcap > mcap_ceiling:
@@ -388,13 +399,21 @@ def evaluate_token(history, meta, cfg, now, all_time_high_price=None):
     sells = meta.get("sells_h1", 0)
 
     # ---- Component scores (0-100 each), weighted:
-    # 20% drawdown quality, 10% short-term dip quality (new - the 15m/30m/1h
-    # flash-dip signal), 20% volume retention, 15% liquidity, 15% buy/sell
-    # acceleration, 10% transaction activity, 5% holder behavior
-    # (approximated - see note below), 5% token age. The 10% for short-term
-    # dip came out of drawdown quality (25%->20%) and holder behavior
-    # (10%->5%, since that component is an unavailable neutral filler
-    # anyway and shouldn't carry much weight).
+    # 25% drawdown quality, 20% short-term dip quality (the 15m/30m/1h
+    # flash-dip signal - the main "catch it as it dips" lever), 15% volume
+    # retention, 15% liquidity, 5% buy/sell momentum, 10% transaction
+    # activity, 5% holder behavior (approximated - see note below), 5% token
+    # age.
+    #
+    # Buy/sell momentum is deliberately a small weight, not a large one: a
+    # token that's actively dipping will naturally be sell-heavy (that's
+    # what a dip IS), and a high buy ratio more often means it's already
+    # started bouncing. This tool is meant to surface a dip as it's
+    # happening, not after recovery buying has kicked in, so momentum isn't
+    # allowed to drag the score down much just because a fresh dip is
+    # sell-dominated - see also the eligibility floor in
+    # passes_eligibility(), which requires SOME buy activity in the last 5
+    # minutes just to rule out a fully dead/abandoned pool.
 
     # Drawdown quality: rewards a real pullback (20-70% range is the sweet
     # spot this tool is looking for), but does NOT keep rewarding deeper and
@@ -428,16 +447,17 @@ def evaluate_token(history, meta, cfg, now, all_time_high_price=None):
 
     activity_score = clamp(_log_scale(total_tx, ceiling=200) * 100, 0, 100)
 
-    # Short-term dip quality: same sweet-spot curve as drawdown_score, but
-    # tuned to short-horizon magnitudes, which are naturally much smaller
-    # than an all-time drawdown - a 15% pullback inside the last hour is a
-    # far bigger signal than a 15% pullback from an all-time high.
+    # Short-term dip quality: same sweet-spot shape as drawdown_score, but
+    # tuned to short-horizon magnitudes and centered on the ~40% flash-dip
+    # this tool is specifically looking for (5-45% sweet spot, peaking at
+    # 45% then fading past that - a near-total collapse inside an hour reads
+    # as a rug/dead pool, not a buyable dip).
     if short_term_dip_pct < 5:
         short_term_dip_score = short_term_dip_pct / 5 * 40
-    elif short_term_dip_pct <= 25:
-        short_term_dip_score = 40 + (short_term_dip_pct - 5) / 20 * 60
+    elif short_term_dip_pct <= 45:
+        short_term_dip_score = 40 + (short_term_dip_pct - 5) / 40 * 60
     else:
-        short_term_dip_score = max(0, 100 - (short_term_dip_pct - 25) * 2)
+        short_term_dip_score = max(0, 100 - (short_term_dip_pct - 45) * 2)
     short_term_dip_score = clamp(short_term_dip_score, 0, 100)
 
     # Holder behavior isn't available from DexScreener's pair data at all -
@@ -450,11 +470,11 @@ def evaluate_token(history, meta, cfg, now, all_time_high_price=None):
     age_score = clamp(age_hours / (7 * 24) * 100, 0, 100)  # maxes out at 7 days old
 
     score = round(
-        drawdown_score * 0.20 +
-        short_term_dip_score * 0.10 +
-        volume_score * 0.20 +
+        drawdown_score * 0.25 +
+        short_term_dip_score * 0.20 +
+        volume_score * 0.15 +
         liquidity_score * 0.15 +
-        momentum_score * 0.15 +
+        momentum_score * 0.05 +
         activity_score * 0.10 +
         holder_score * 0.05 +
         age_score * 0.05
@@ -477,6 +497,7 @@ def evaluate_token(history, meta, cfg, now, all_time_high_price=None):
         "age_hours": round(age_hours, 1),
         "liquidity_usd": liquidity,
         "volume24h_usd": volume,
+        "volume_5m_usd": meta.get("volume_5m_usd", 0),
         "score": score,
         "score_breakdown": {
             "drawdown_quality": round(drawdown_score),
@@ -509,10 +530,10 @@ def format_alert(key, status):
     short_term_note = "" if status.get("short_term_dip_has_coverage") else " (limited history so far)"
     return (
         f"\U0001F7E2 *Dip candidate*: {status['label']} — score {status['score']}/100\n"
-        f"Down {status['max_drawdown_pct']}% from its recent high{proxy_note}, "
-        f"now +{status['bounce_pct']}% off the bottom.\n"
         f"Sharpest short-term pullback (15m/30m/1h): -{status['short_term_dip_pct']}%{short_term_note}\n"
+        f"Down {status['max_drawdown_pct']}% from its recent high{proxy_note} "
+        f"(+{status['bounce_pct']}% off the bottom).\n"
         f"Price: ${status['current_price']:.8f}  |  Age: {status['age_hours']}h\n"
-        f"Liquidity: ${status['liquidity_usd']:,.0f}  |  24h Vol: ${status['volume24h_usd']:,.0f}\n"
+        f"Liquidity: ${status['liquidity_usd']:,.0f}  |  5m Vol: ${status['volume_5m_usd']:,.0f}  |  24h Vol: ${status['volume24h_usd']:,.0f}\n"
         f"{status['url']}"
     )

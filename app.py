@@ -45,6 +45,11 @@ DEFAULT_CONFIG = {
     # pass/fail gates.
     "eligibility_min_liquidity_usd": 2000,
     "eligibility_min_volume_24h_usd": 500,
+    # Requires real, CURRENT trading, not just stale 24h volume - a pool
+    # can coast on a big number from hours ago long after activity has
+    # actually died off. Paired with the "at least one buy in the last 5
+    # minutes" check in screener_core.passes_eligibility().
+    "eligibility_min_volume_5m_usd": 5000,
     "eligibility_min_market_cap_usd": 10000,
     "eligibility_max_market_cap_usd": 100_000_000,
 
@@ -194,11 +199,13 @@ def run_cycle():
         pair_created_ms = best.get("pairCreatedAt")
         market_cap = float(best.get("marketCap") or best.get("fdv") or 0)
         txns_h1 = (best.get("txns") or {}).get("h1") or {}
+        txns_m5 = (best.get("txns") or {}).get("m5") or {}
         meta = {
             "label": (best.get("baseToken") or {}).get("symbol", label),
             "url": best.get("url", ""),
             "liquidity_usd": float((best.get("liquidity") or {}).get("usd") or 0),
             "volume24h_usd": float((best.get("volume") or {}).get("h24") or 0),
+            "volume_5m_usd": float((best.get("volume") or {}).get("m5") or 0),
             "market_cap_usd": market_cap,
             "pair_created_at": (pair_created_ms / 1000) if pair_created_ms else now,
             "current_price": price,
@@ -206,6 +213,8 @@ def run_cycle():
             "price_change_h1_pct": (best.get("priceChange") or {}).get("h1"),
             "price_change_h6_pct": (best.get("priceChange") or {}).get("h6"),
             "price_change_24h_pct": (best.get("priceChange") or {}).get("h24"),
+            "buys_m5": float(txns_m5.get("buys") or 0),
+            "sells_m5": float(txns_m5.get("sells") or 0),
             "buys_h1": float(txns_h1.get("buys") or 0),
             "sells_h1": float(txns_h1.get("sells") or 0),
         }
