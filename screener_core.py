@@ -494,6 +494,12 @@ def evaluate_token(history, meta, cfg, now, all_time_high_price=None):
         "windows": windows,
         "short_term_dip_pct": round(short_term_dip_pct, 1),
         "short_term_dip_has_coverage": short_term_dip_has_coverage,
+        # Top-level copy of windows["1h"]["bounce_pct"] (current vs the 1h
+        # window's own low, not the 7-day rolling low bounce_pct above) -
+        # flattened out here so the UI can sort/display it without reaching
+        # into the nested windows dict.
+        "bounce_1h_pct": windows["1h"]["bounce_pct"],
+        "bounce_1h_has_coverage": windows["1h"]["has_full_coverage"],
         "age_hours": round(age_hours, 1),
         "liquidity_usd": liquidity,
         "volume24h_usd": volume,
@@ -532,7 +538,7 @@ def format_alert(key, status):
         f"\U0001F7E2 *Dip candidate*: {status['label']} — score {status['score']}/100\n"
         f"Sharpest short-term pullback (15m/30m/1h): -{status['short_term_dip_pct']}%{short_term_note}\n"
         f"Down {status['max_drawdown_pct']}% from its recent high{proxy_note} "
-        f"(+{status['bounce_pct']}% off the bottom).\n"
+        f"(+{status['bounce_1h_pct']}% off the 1h low).\n"
         f"Price: ${status['current_price']:.8f}  |  Age: {status['age_hours']}h\n"
         f"Liquidity: ${status['liquidity_usd']:,.0f}  |  5m Vol: ${status['volume_5m_usd']:,.0f}  |  24h Vol: ${status['volume24h_usd']:,.0f}\n"
         f"{status['url']}"

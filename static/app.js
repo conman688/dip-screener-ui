@@ -251,7 +251,7 @@ function renderTable() {
   }
 
   tokenRows.innerHTML = filtered.map(t => {
-    const bounceClass = t.bounce_pct >= 0 ? 'pct-up' : 'pct-down';
+    const bounce1hClass = t.bounce_1h_pct >= 0 ? 'pct-up' : 'pct-down';
     const starred = !!t.is_watchlisted;
     const isMatch = t.score >= alertScoreThreshold;
     const scoreClass = t.score >= 70 ? 'score-high' : t.score >= 40 ? 'score-mid' : 'score-low';
@@ -295,7 +295,7 @@ function renderTable() {
         <td class="num">${fmtMoney(t.market_cap_usd)}</td>
         <td class="num pct-down"${proxyNote}>-${t.max_drawdown_pct}%${t.reference_high_is_proxy ? '*' : ''}</td>
         <td class="num pct-down" title="${escapeHtml(windowsTooltip)}">-${t.short_term_dip_pct}%${t.short_term_dip_has_coverage ? '' : '*'}</td>
-        <td class="num ${bounceClass}">+${t.bounce_pct}%</td>
+        <td class="num ${bounce1hClass}">${t.bounce_1h_pct >= 0 ? '+' : ''}${t.bounce_1h_pct}%${t.bounce_1h_has_coverage ? '' : '*'}</td>
         <td class="num">${fmtAge(t.age_hours)}</td>
         <td class="num">${fmtMoney(t.liquidity_usd)}</td>
         <td class="num">${fmtMoney(t.volume_5m_usd)}</td>
