@@ -158,6 +158,14 @@ function fmtAge(hours) {
   return (hours / 24).toFixed(1) + 'd';
 }
 
+function fmtMoneySigned(n) {
+  return (n >= 0 ? '+' : '-') + fmtMoney(Math.abs(n));
+}
+
+function fmtPctSigned(n) {
+  return (n >= 0 ? '+' : '') + n.toFixed(1) + '%';
+}
+
 function timeAgo(ts) {
   const seconds = Math.max(0, Math.floor(Date.now() / 1000 - ts));
   if (seconds < 60) return seconds + 's ago';
@@ -169,6 +177,19 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str ?? '';
   return div.innerHTML;
+}
+
+// ---------------- Toast (replaces window.alert, which isn't reliably
+// available in every browser/embedded context) ----------------
+
+const toastEl = document.getElementById('toast');
+let toastTimer = null;
+
+function showToast(message) {
+  toastEl.textContent = message;
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('show'), 3500);
 }
 
 // ---------------- Live status table ----------------
@@ -255,6 +276,11 @@ function renderTable() {
                   data-address="${escapeHtml(t.token_address)}"
                   data-label="${escapeHtml(t.label)}"
                   title="${starred ? 'Remove from watchlist' : 'Add to watchlist'}">${starred ? '★' : '☆'}</button>
+          <button class="buy-btn"
+                  data-chain="${escapeHtml(t.chain_id)}"
+                  data-address="${escapeHtml(t.token_address)}"
+                  data-label="${escapeHtml(t.label)}"
+                  title="Paper buy">$</button>
         </td>
         <td>
           <div class="token-label">${escapeHtml(t.label)}</div>
@@ -276,6 +302,16 @@ function renderTable() {
     `;
   }).join('');
 }
+
+// Delegated click handler for the paper-buy button on each row — opens the
+// buy modal rather than using window.prompt(), which isn't reliably
+// available in every browser/embedded context (e.g. it throws outright in
+// this project's own preview harness).
+tokenRows.addEventListener('click', (e) => {
+  const btn = e.target.closest('.buy-btn');
+  if (!btn) return;
+  openBuyModal(btn.dataset.chain, btn.dataset.address, btn.dataset.label);
+});
 
 // Delegated click handler for star buttons — the table body is rebuilt on
 // every render, so listeners are attached once here rather than per-row.
@@ -329,6 +365,170 @@ function renderAlerts(alerts) {
     </div>
   `).join('');
 }
+
+// ---------------- Paper trading ----------------
+// Manual-only buy-the-dip trainer: the $ button on a token row opens a
+// position at the current price, and Sell here closes it at whatever the
+// current price is now — no auto-buy/auto-sell, this is for practicing the
+// entry/exit judgment yourself. See app.py's /api/paper/* routes.
+
+const paperCashEl = document.getElementById('paper-cash');
+const paperTotalValueEl = document.getElementById('paper-total-value');
+const paperWinRateEl = document.getElementById('paper-win-rate');
+const paperPnlEl = document.getElementById('paper-total-pnl');
+const paperPositionsEl = document.getElementById('paper-positions');
+const paperClosedEl = document.getElementById('paper-closed');
+const paperResetBtn = document.getElementById('paper-reset-btn');
+
+async function fetchPaperPortfolio() {
+  try {
+    const res = await fetch('/api/paper/portfolio');
+    const data = await res.json();
+    renderPaperPortfolio(data);
+  } catch (e) { /* keep last known panel state on transient errors */ }
+}
+
+function renderPaperPortfolio(data) {
+  paperCashEl.textContent = fmtMoney(data.cash_usd);
+  paperTotalValueEl.textContent = fmtMoney(data.total_value_usd);
+  paperWinRateEl.textContent = data.trade_count
+    ? `${data.win_rate_pct.toFixed(0)}% (${data.trade_count} trade${data.trade_count === 1 ? '' : 's'})`
+    : '—';
+
+  paperPnlEl.textContent = `${fmtMoneySigned(data.total_pnl_usd)} (${fmtPctSigned(data.total_pnl_pct)})`;
+  paperPnlEl.className = 'count ' + (data.total_pnl_usd >= 0 ? 'pct-up' : 'pct-down');
+
+  if (data.positions.length === 0) {
+    paperPositionsEl.innerHTML = '<li class="empty-note">No open paper positions yet. Click the $ button on any token row to buy the dip with fake money.</li>';
+  } else {
+    paperPositionsEl.innerHTML = data.positions.map(p => `
+      <li class="paper-position">
+        <div class="paper-position-text">
+          <span class="paper-position-label">${escapeHtml(p.label)}</span>
+          <span class="paper-position-meta">${fmtMoney(p.amount_usd)} @ ${fmtPrice(p.entry_price)} · opened ${timeAgo(p.opened_at)}</span>
+        </div>
+        <span class="paper-position-pnl ${p.unrealized_pnl_usd >= 0 ? 'pct-up' : 'pct-down'}">${fmtMoneySigned(p.unrealized_pnl_usd)} (${fmtPctSigned(p.unrealized_pnl_pct)})</span>
+        <button class="sell-btn" data-trade-id="${escapeHtml(p.trade_id)}" title="Sell at current price">Sell</button>
+      </li>
+    `).join('');
+  }
+
+  if (data.closed_trades.length === 0) {
+    paperClosedEl.innerHTML = '';
+  } else {
+    paperClosedEl.innerHTML = '<h3 class="paper-closed-heading">Closed trades</h3>' + data.closed_trades.slice(0, 10).map(t => `
+      <div class="paper-closed-row">
+        <span>${escapeHtml(t.label)}</span>
+        <span class="${t.pnl_usd >= 0 ? 'pct-up' : 'pct-down'}">${fmtMoneySigned(t.pnl_usd)} (${fmtPctSigned(t.pnl_pct)})</span>
+      </div>
+    `).join('');
+  }
+}
+
+paperPositionsEl.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.sell-btn');
+  if (!btn) return;
+  btn.disabled = true;
+  const res = await fetch('/api/paper/sell', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ trade_id: btn.dataset.tradeId }),
+  });
+  const data = await res.json();
+  if (data.ok) {
+    fetchPaperPortfolio();
+  } else {
+    showToast(data.error || 'Sell failed.');
+    btn.disabled = false;
+  }
+});
+
+// Two-click confirm instead of window.confirm(), for the same reason as
+// the toast above - native blocking dialogs aren't reliable everywhere.
+let resetArmed = false;
+let resetArmTimer = null;
+
+paperResetBtn.addEventListener('click', async () => {
+  if (!resetArmed) {
+    resetArmed = true;
+    paperResetBtn.textContent = 'Click again to confirm';
+    clearTimeout(resetArmTimer);
+    resetArmTimer = setTimeout(() => {
+      resetArmed = false;
+      paperResetBtn.textContent = 'Reset portfolio';
+    }, 4000);
+    return;
+  }
+  clearTimeout(resetArmTimer);
+  resetArmed = false;
+  paperResetBtn.textContent = 'Reset portfolio';
+  await fetch('/api/paper/reset', { method: 'POST' });
+  fetchPaperPortfolio();
+});
+
+// ---------------- Buy modal ----------------
+
+const buyModalOverlay = document.getElementById('buy-modal-overlay');
+const buyModalTitle = document.getElementById('buy-modal-title');
+const buyModalAmount = document.getElementById('buy-modal-amount');
+const buyModalError = document.getElementById('buy-modal-error');
+const buyModalCancel = document.getElementById('buy-modal-cancel');
+const buyModalConfirm = document.getElementById('buy-modal-confirm');
+
+let pendingBuy = null; // { chain_id, token_address, label }
+
+function openBuyModal(chain_id, token_address, label) {
+  pendingBuy = { chain_id, token_address, label };
+  buyModalTitle.textContent = `Paper buy ${label}`;
+  buyModalAmount.value = '100';
+  buyModalError.hidden = true;
+  buyModalOverlay.classList.remove('hidden');
+  buyModalAmount.focus();
+  buyModalAmount.select();
+}
+
+function closeBuyModal() {
+  buyModalOverlay.classList.add('hidden');
+  pendingBuy = null;
+}
+
+buyModalCancel.addEventListener('click', closeBuyModal);
+buyModalOverlay.addEventListener('click', (e) => {
+  if (e.target === buyModalOverlay) closeBuyModal();
+});
+
+async function submitBuy() {
+  if (!pendingBuy) return;
+  const amount_usd = Number(buyModalAmount.value);
+  if (!amount_usd || amount_usd <= 0) {
+    buyModalError.textContent = 'Enter a valid dollar amount.';
+    buyModalError.hidden = false;
+    return;
+  }
+  buyModalConfirm.disabled = true;
+  const res = await fetch('/api/paper/buy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...pendingBuy, amount_usd }),
+  });
+  const data = await res.json();
+  buyModalConfirm.disabled = false;
+  if (data.ok) {
+    closeBuyModal();
+    fetchPaperPortfolio();
+  } else {
+    buyModalError.textContent = data.error || 'Buy failed.';
+    buyModalError.hidden = false;
+  }
+}
+
+buyModalConfirm.addEventListener('click', submitBuy);
+buyModalAmount.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') submitBuy();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !buyModalOverlay.classList.contains('hidden')) closeBuyModal();
+});
 
 // ---------------- Watchlist panel ----------------
 
@@ -490,5 +690,7 @@ loadConfig();
 fetchWatchlist();
 fetchStatus();
 fetchAlerts();
+fetchPaperPortfolio();
 setInterval(fetchStatus, 5000);
 setInterval(fetchAlerts, 10000);
+setInterval(fetchPaperPortfolio, 5000);

@@ -120,6 +120,35 @@
 
     <section class="panel">
       <div class="panel-head">
+        <h2>Paper trading</h2>
+        <span class="count" id="paper-total-pnl"></span>
+      </div>
+      <div class="paper-summary">
+        <div class="paper-stat">
+          <span class="paper-stat-label">Cash</span>
+          <span class="paper-stat-value" id="paper-cash">$0</span>
+        </div>
+        <div class="paper-stat">
+          <span class="paper-stat-label">Portfolio value</span>
+          <span class="paper-stat-value" id="paper-total-value">$0</span>
+        </div>
+        <div class="paper-stat">
+          <span class="paper-stat-label">Win rate</span>
+          <span class="paper-stat-value" id="paper-win-rate">—</span>
+        </div>
+      </div>
+      <p class="field-hint">Click the $ button on any token row to buy the dip with fake money, then Sell here whenever you decide to exit. Starts at $10,000 fake cash.</p>
+      <ul class="paper-positions" id="paper-positions">
+        <li class="empty-note">No open paper positions yet. Click the $ button on any token row to buy the dip with fake money.</li>
+      </ul>
+      <div class="paper-closed" id="paper-closed"></div>
+      <div class="paper-actions">
+        <button class="btn btn-ghost btn-small" id="paper-reset-btn">Reset portfolio</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
         <h2>Scan coverage</h2>
         <span class="count" id="funnel-cycle-note"></span>
       </div>
@@ -207,6 +236,23 @@
   </aside>
 
 </main>
+
+<div class="modal-overlay hidden" id="buy-modal-overlay">
+  <div class="modal">
+    <h3 id="buy-modal-title">Paper buy</h3>
+    <label class="field">
+      <span>Amount (USD)</span>
+      <input type="number" id="buy-modal-amount" min="1" step="1" value="100">
+    </label>
+    <p class="modal-error" id="buy-modal-error" hidden></p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost btn-small" id="buy-modal-cancel">Cancel</button>
+      <button class="btn btn-primary btn-small" id="buy-modal-confirm">Buy</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
 
 <script src="/static/app.js"></script>
 </body>

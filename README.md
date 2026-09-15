@@ -27,6 +27,15 @@ Each token also gets a full **15m / 30m / 1h / 6h / 12h / 24h** drawdown-and-bou
 
 Tokens scoring at or above the alert threshold trigger a Telegram message (if configured) and appear in the Alerts feed.
 
+## Paper trading
+
+A manual-only buy-the-dip trainer, for practicing entries and exits without risking real money:
+
+- Click the **$** button on any tracked token row to open a simulated position at the current price, for whatever dollar amount you choose.
+- Click **Sell** on an open position in the Paper Trading panel to close it at whatever the current price is then — nothing auto-buys or auto-sells, so both the entry and the exit are your call.
+- Starts with $10,000 in fake cash; tracks open positions (unrealized P&L), closed trade history, and an overall win rate.
+- **Reset portfolio** clears everything back to the starting balance (two clicks required, to avoid an accidental wipe).
+
 ## Configuration
 
 Settings live in `config.json` (copy `config.example.json` to get started — `config.json` and `state.json` are gitignored since they hold your local runtime data and, potentially, a Telegram bot token). Most of it is also editable from the Settings panel in the UI:
