@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dip Screener</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📉</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <h1>Dip Screener</h1>
+    <p class="tagline">Watching for coins that dipped hard and bounced back</p>
+  </div>
+
+  <div class="controls">
+    <div class="status-pill" id="status-pill">
+      <span class="dot" id="status-dot"></span>
+      <span id="status-text">Loading…</span>
+    </div>
+    <span class="last-check" id="last-check"></span>
+    <button class="btn btn-ghost" id="poll-now-btn">Check now</button>
+    <button class="btn btn-primary" id="toggle-btn">Pause</button>
+  </div>
+</header>
+
+<main class="layout">
+
+  <section class="panel main-panel">
+    <div class="panel-head">
+      <h2>Tracked tokens</h2>
+      <span class="count" id="token-count">0 tokens</span>
+    </div>
+
+    <div class="filter-bar" id="filter-bar">
+      <div class="filter-group">
+        <label>Min score</label>
+        <input type="number" id="f-score" min="0" max="100" step="1">
+      </div>
+      <div class="filter-group">
+        <label>Market cap</label>
+        <div class="filter-range">
+          <input type="number" id="f-mcap-min" placeholder="Min $" min="0" step="1000">
+          <span class="range-sep">–</span>
+          <input type="number" id="f-mcap-max" placeholder="Max $" min="0" step="1000">
+        </div>
+      </div>
+      <div class="filter-group">
+        <label>Age (hours)</label>
+        <div class="filter-range">
+          <input type="number" id="f-age-min" placeholder="Min" min="0" step="1">
+          <span class="range-sep">–</span>
+          <input type="number" id="f-age-max" placeholder="Max" min="0" step="1">
+        </div>
+      </div>
+      <div class="filter-group">
+        <label>Dip (%)</label>
+        <div class="filter-range">
+          <input type="number" id="f-dip-min" placeholder="Min %" min="0" max="100" step="1">
+          <span class="range-sep">–</span>
+          <input type="number" id="f-dip-max" placeholder="Max %" min="0" max="100" step="1">
+        </div>
+      </div>
+      <div class="filter-group">
+        <label>Min liquidity ($)</label>
+        <input type="number" id="f-liquidity" min="0" step="1000">
+      </div>
+      <div class="filter-group">
+        <label>Min 24h volume ($)</label>
+        <input type="number" id="f-volume" min="0" step="1000">
+      </div>
+      <div class="filter-group filter-actions">
+        <label>&nbsp;</label>
+        <button class="btn btn-ghost btn-small" id="filter-reset-btn">Reset</button>
+      </div>
+    </div>
+    <p class="field-hint filter-note">These narrow what's shown. Drawdown depth, volume retention, and buy/sell momentum are scoring inputs now, not hard filters — see Score below and the breakdown on each row.</p>
+
+    <div class="table-scroll">
+      <table class="token-table">
+        <thead>
+          <tr>
+            <th class="col-star"></th>
+            <th class="sortable" data-sort="label">Token</th>
+            <th class="sortable num" data-sort="score">Score</th>
+            <th class="sortable num" data-sort="current_price">Price</th>
+            <th class="sortable num" data-sort="market_cap_usd">Market cap</th>
+            <th class="sortable num" data-sort="max_drawdown_pct">Drawdown</th>
+            <th class="sortable num" data-sort="short_term_dip_pct" title="Sharpest pullback across the 15m/30m/1h windows - hover a row's value for the full 15m-24h breakdown">Recent dip</th>
+            <th class="sortable num" data-sort="bounce_pct">Bounce off low</th>
+            <th class="sortable num" data-sort="age_hours">Age</th>
+            <th class="sortable num" data-sort="liquidity_usd">Liquidity</th>
+            <th class="sortable num" data-sort="volume24h_usd">24h Vol</th>
+          </tr>
+        </thead>
+        <tbody id="token-rows">
+          <tr class="empty-row">
+            <td colspan="11">No tokens tracked yet. Turn on auto-discover, or add one directly below.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <aside class="sidebar">
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Alerts</h2>
+        <span class="count" id="alert-count">0</span>
+      </div>
+      <div class="alerts-feed" id="alerts-feed">
+        <p class="empty-note">No matches yet. This fills in as tokens qualify.</p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Scan coverage</h2>
+        <span class="count" id="funnel-cycle-note"></span>
+      </div>
+      <ul class="funnel-list" id="funnel-list">
+        <li class="empty-note">Runs after the first scan cycle completes.</li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Watchlist</h2>
+        <span class="count" id="watchlist-count">0</span>
+      </div>
+
+      <div class="watchlist-add" id="watchlist-add">
+        <select id="wl-chain">
+          <option value="solana">Solana</option>
+          <option value="ethereum">Ethereum</option>
+          <option value="base">Base</option>
+          <option value="bsc">BSC</option>
+          <option value="polygon">Polygon</option>
+          <option value="arbitrum">Arbitrum</option>
+          <option value="__custom">Other…</option>
+        </select>
+        <input type="text" id="wl-chain-custom" placeholder="chain id" hidden>
+        <input type="text" id="wl-address" placeholder="Token address" class="wl-address-input">
+        <input type="text" id="wl-label" placeholder="Label (optional)" class="wl-label-input">
+        <button class="btn btn-primary btn-small" id="wl-add-btn">Add</button>
+      </div>
+      <p class="field-hint">Or click ★ on any row in the table to watch it directly.</p>
+
+      <ul class="watchlist-items" id="watchlist-items">
+        <li class="empty-note">Nothing watched yet — everything below comes from auto-discover only.</li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head panel-head-toggle" id="settings-toggle">
+        <h2>Settings</h2>
+        <span class="chevron collapsed" id="settings-chevron">▾</span>
+      </div>
+
+      <form class="settings-form collapsed" id="settings-form">
+
+        <label class="field checkbox-field">
+          <input type="checkbox" id="cfg-auto-discover">
+          <span>Auto-discover new &amp; trending tokens</span>
+        </label>
+
+        <label class="field">
+          <span>Alert score threshold</span>
+          <input type="number" id="cfg-alert-score" min="0" max="100" step="1">
+        </label>
+        <label class="field">
+          <span>Confirm polls (consecutive rises to count a bounce as confirmed)</span>
+          <input type="number" id="cfg-confirm-polls" min="1" max="20" step="1">
+        </label>
+        <label class="field">
+          <span>Keep tokens tracked for this many days after they last appear anywhere (days)</span>
+          <input type="number" id="cfg-retention-days" min="1" max="90" step="1">
+        </label>
+        <label class="field">
+          <span>Poll every (seconds)</span>
+          <input type="number" id="cfg-poll-interval" min="30" step="30">
+        </label>
+
+        <label class="field">
+          <span>Telegram bot token</span>
+          <input type="password" id="cfg-telegram-token" placeholder="leave blank to disable">
+        </label>
+        <label class="field">
+          <span>Telegram chat ID</span>
+          <input type="text" id="cfg-telegram-chat" placeholder="e.g. 987654321">
+        </label>
+
+        <p class="field-hint">Eligibility (the bare-minimum liquidity/volume/market-cap floor a token needs to be scored at all) is intentionally loose and lives in config.json directly — it's meant to exclude only obvious dust, not to pre-filter candidates the way the old hard thresholds did.</p>
+
+        <div class="form-actions">
+          <span class="save-note" id="save-note"></span>
+          <button type="submit" class="btn btn-primary">Save settings</button>
+        </div>
+      </form>
+    </section>
+
+  </aside>
+
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

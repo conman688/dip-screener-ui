@@ -1,0 +1,8 @@
+Flask>=3.0
+
+# screener_core.py itself only uses the Python standard library
+# (urllib, json, time) so nothing extra is needed for the polling logic.
+# Optional, if you want a nicer HTTP client than urllib later:
+#
+# requests
+# python-dotenv       # load TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID from a .env file

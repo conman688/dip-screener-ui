@@ -1,0 +1,22 @@
+{
+  "watchlist": [],
+  "auto_discover": true,
+  "eligibility_min_liquidity_usd": 2000,
+  "eligibility_min_volume_24h_usd": 500,
+  "eligibility_min_market_cap_usd": 10000,
+  "eligibility_max_market_cap_usd": 100000000,
+  "min_age_hours": 0,
+  "max_age_hours": 0,
+  "min_market_cap_usd": 0,
+  "max_market_cap_usd": 0,
+  "confirm_polls": 3,
+  "min_liquidity_usd": 0,
+  "min_volume_24h_usd": 0,
+  "alert_score_threshold": 70,
+  "known_universe_retention_days": 14,
+  "poll_interval_seconds": 90,
+  "history_window_hours": 168,
+  "telegram_bot_token": "",
+  "telegram_chat_id": "",
+  "running": true
+}
