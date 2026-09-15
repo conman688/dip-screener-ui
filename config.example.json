@@ -15,6 +15,8 @@
   "min_volume_24h_usd": 0,
   "alert_score_threshold": 70,
   "known_universe_retention_days": 14,
+  "bundling_check_enabled": true,
+  "bundling_recheck_hours": 6,
   "poll_interval_seconds": 90,
   "history_window_hours": 168,
   "telegram_bot_token": "",

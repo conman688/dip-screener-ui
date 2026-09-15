@@ -256,6 +256,22 @@ body {
 .score-pill.score-mid { color: var(--gold); background: var(--gold-soft); }
 .score-pill.score-low { color: var(--text-dim); background: var(--surface-raised); }
 
+.bundling-pill {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  cursor: help;
+  white-space: nowrap;
+}
+.bundling-pill.bundling-low { color: var(--gain); background: rgba(111, 190, 147, 0.12); }
+.bundling-pill.bundling-moderate { color: var(--gold); background: var(--gold-soft); }
+.bundling-pill.bundling-high { color: var(--dip); background: rgba(209, 120, 88, 0.14); }
+.bundling-pill.bundling-severe { color: #241A08; background: var(--dip); }
+.bundling-pill.bundling-unknown { color: var(--text-faint); background: var(--surface-raised); }
+
 /* ---------- Scan coverage (funnel) ---------- */
 
 .funnel-list {

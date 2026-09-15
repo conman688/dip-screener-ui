@@ -64,6 +64,14 @@ DEFAULT_CONFIG = {
     "alert_score_threshold": 70,
     "known_universe_retention_days": 14,
 
+    # Bundling/insider-cluster check (RugCheck, Solana only) - informational
+    # only, never blocks a token from showing up; see run_cycle() and
+    # screener_core.compute_bundling_severity(). Cached per-token for
+    # bundling_recheck_hours since holder-cluster structure doesn't shift
+    # cycle to cycle, so this isn't worth re-querying every 90 seconds.
+    "bundling_check_enabled": True,
+    "bundling_recheck_hours": 6,
+
     "poll_interval_seconds": 90,  # tight enough to resolve real 15m/30m windows (see DIP_WINDOWS)
     "history_window_hours": 168,  # 7 days - long enough to catch multi-day retracements, not just same-day
     "telegram_bot_token": "",
@@ -232,16 +240,40 @@ def run_cycle():
 
         prior = known_universe_snapshot.get(key, {})
         all_time_high_price = prior.get("all_time_high_price")
+
+        # Bundling/insider-cluster check - only for the shortlist of tokens
+        # that already cleared eligibility (not the full ~150-token pool),
+        # and cached per-token so a token already checked recently doesn't
+        # cost another RugCheck call every single cycle.
+        bundling = prior.get("bundling")
+        bundling_checked_at = prior.get("bundling_checked_at", 0)
+        recheck_seconds = cfg_snapshot.get("bundling_recheck_hours", 6) * 3600
+        if (
+            cfg_snapshot.get("bundling_check_enabled", True)
+            and chain_id == "solana"
+            and (now - bundling_checked_at > recheck_seconds)
+        ):
+            report = core.fetch_rugcheck_report(token_address)
+            bundling = core.compute_bundling_severity(report)
+            bundling_checked_at = now
+
         known_universe_updates[key] = {
             "label": meta["label"],
             "first_seen": prior.get("first_seen", now),
             "last_seen": now,
             "all_time_high_price": max(all_time_high_price or 0, price) or price,
             "all_time_high_mcap": max(prior.get("all_time_high_mcap", 0) or 0, market_cap),
+            "bundling": bundling,
+            "bundling_checked_at": bundling_checked_at,
         }
 
         status = core.evaluate_token(history, meta, cfg_snapshot, now, all_time_high_price)
         status["platform"] = best.get("dexId", "")
+        status["bundling"] = bundling
+        # Flattened copy for the UI's sortable column - bundling itself is
+        # a nested dict (or None when unavailable), which client-side sort
+        # can't key off of directly.
+        status["bundling_severity"] = bundling["severity"] if bundling else -1
         new_status[key] = status
 
         if status["score"] >= cfg_snapshot.get("alert_score_threshold", 70):

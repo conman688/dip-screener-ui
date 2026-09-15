@@ -140,6 +140,67 @@ def fetch_token_pairs_batch_fallback(chain_id: str, token_address: str):
     return pairs[0]
 
 
+RUGCHECK_BASE = "https://api.rugcheck.xyz/v1"
+
+
+def fetch_rugcheck_report(token_address: str):
+    """Bundling/insider-cluster check via RugCheck's free public API -
+    confirmed Solana-only (an EVM address returns HTTP 400), so callers
+    should skip this for non-Solana chains rather than rely on the error
+    path. Returns None on any failure (timeout, rate limit, unknown token,
+    etc.) - this is a best-effort enrichment on top of DexScreener data,
+    never a required one, so a slow/down third-party API should never be
+    able to hide a token, only leave its bundling status "unknown"."""
+    url = f"{RUGCHECK_BASE}/tokens/{token_address}/report"
+    return http_get_json(url, timeout=12)
+
+
+def compute_bundling_severity(rugcheck_report):
+    """Turns RugCheck's graphInsidersDetected (a count of wallets its graph
+    analysis traced back to a common funding source - the same "one wallet
+    spoking out to dozens of others" pattern a Bubblemaps-style visual
+    shows) into a 0-100 severity score plus a human label, scaled by what
+    fraction of the token's total holders that cluster represents. 90
+    insider wallets out of 120 total holders is a near-total-bundle
+    situation; the same 90 out of 5,000 holders is a much smaller concern -
+    the raw count alone can't tell those apart.
+
+    This deliberately does NOT gate eligibility - the brief here is to show
+    the user how bad it is and let them decide, not to hide the token.
+
+    Returns None if RugCheck has no usable data (wrong chain, request
+    failed, or holder count unknown) - intentionally NOT treated as "0%
+    bundled", since that would misrepresent "we don't know" as "confirmed
+    clean"."""
+    if not rugcheck_report:
+        return None
+    insiders = rugcheck_report.get("graphInsidersDetected")
+    total_holders = rugcheck_report.get("totalHolders")
+    if insiders is None or not total_holders:
+        return None
+    insider_pct = clamp(insiders / total_holders * 100, 0, 100)
+    rugged = bool(rugcheck_report.get("rugged"))
+    severity = 100.0 if rugged else insider_pct
+    if rugged:
+        label = "Rugged"
+    elif insider_pct >= 40:
+        label = "Severe"
+    elif insider_pct >= 20:
+        label = "High"
+    elif insider_pct >= 8:
+        label = "Moderate"
+    else:
+        label = "Low"
+    return {
+        "insider_wallets": insiders,
+        "total_holders": total_holders,
+        "insider_pct": round(insider_pct, 1),
+        "severity": round(severity, 1),
+        "label": label,
+        "rugged": rugged,
+    }
+
+
 def send_telegram(bot_token: str, chat_id: str, message: str):
     if not bot_token or not chat_id:
         print(f"[alert - telegram not configured]\n{message}\n")
@@ -534,11 +595,21 @@ def _log_scale(value, ceiling):
 def format_alert(key, status):
     proxy_note = " (approx., limited history so far)" if status.get("reference_high_is_proxy") else ""
     short_term_note = "" if status.get("short_term_dip_has_coverage") else " (limited history so far)"
+    bundling = status.get("bundling")
+    # Only shown when RugCheck actually has data (Solana only) - silence
+    # rather than a misleading "unknown = fine" line for everything else.
+    bundling_line = ""
+    if bundling:
+        bundling_line = (
+            f"Bundling: {bundling['label']} — {bundling['insider_pct']}% of holders "
+            f"({bundling['insider_wallets']}/{bundling['total_holders']}) traced to a common funder\n"
+        )
     return (
         f"\U0001F7E2 *Dip candidate*: {status['label']} — score {status['score']}/100\n"
         f"Sharpest short-term pullback (15m/30m/1h): -{status['short_term_dip_pct']}%{short_term_note}\n"
         f"Down {status['max_drawdown_pct']}% from its recent high{proxy_note} "
         f"(+{status['bounce_1h_pct']}% off the 1h low).\n"
+        f"{bundling_line}"
         f"Price: ${status['current_price']:.8f}  |  Age: {status['age_hours']}h\n"
         f"Liquidity: ${status['liquidity_usd']:,.0f}  |  5m Vol: ${status['volume_5m_usd']:,.0f}  |  24h Vol: ${status['volume24h_usd']:,.0f}\n"
         f"{status['url']}"

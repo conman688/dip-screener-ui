@@ -28,6 +28,15 @@ Each token also gets a full **15m / 30m / 1h / 6h / 12h / 24h** drawdown-and-bou
 
 Tokens scoring at or above the alert threshold trigger a Telegram message (if configured) and appear in the Alerts feed.
 
+## Bundling check
+
+A "Bundling" column shows how much of a token's holder base [RugCheck](https://rugcheck.xyz) traced back to a single common funding wallet — the same pattern a Bubblemaps-style graph shows as one wallet spoking out to dozens of others, which is a common setup for an artificial pump-then-dump. It's **informational only and never filters a token out** — a heavily bundled token can still show up and score well on its dip characteristics, but you'll see e.g. `Severe 94.8%` (94.8% of its holders traced to one funder) right on the row instead of finding out after clicking through to a chart.
+
+Notes:
+- **Solana only** — RugCheck's public API doesn't cover other chains, so EVM tokens (e.g. `robinhood`, `base`) show `—` (no data), not a false "clean" result.
+- Checked once per token then cached for `bundling_recheck_hours` (default 6h), so it isn't re-queried every 90-second cycle — cluster structure doesn't shift that fast.
+- Severity = insider wallets ÷ total holders, not the raw count, since 90 insider wallets out of 120 total holders is a very different situation than the same 90 out of 5,000.
+
 ## Paper trading
 
 A manual-only buy-the-dip trainer, for practicing entries and exits without risking real money:
@@ -49,6 +58,7 @@ Settings live in `config.json` (copy `config.example.json` to get started — `c
 | `eligibility_min_*` / `eligibility_max_*` | Loose floor/ceiling applied before scoring |
 | `eligibility_min_volume_5m_usd` | Minimum 5-minute dollar volume to be scored at all (default $5,000) — the main dead-coin filter, paired with a live-buy-activity check |
 | `known_universe_retention_days` | How long a discovered token stays tracked after it last appears anywhere |
+| `bundling_check_enabled` / `bundling_recheck_hours` | Toggle the RugCheck bundling check and how often it's refreshed per token (default on, 6h) |
 | `telegram_bot_token` / `telegram_chat_id` | Optional Telegram alerts |
 
 ## Project structure

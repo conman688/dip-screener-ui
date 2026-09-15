@@ -242,11 +242,11 @@ function renderTable() {
     + (latestTokens.length !== filtered.length ? ` (of ${latestTokens.length})` : '');
 
   if (latestTokens.length === 0) {
-    tokenRows.innerHTML = '<tr class="empty-row"><td colspan="12">No tokens tracked yet. Turn on auto-discover, or add one directly below.</td></tr>';
+    tokenRows.innerHTML = '<tr class="empty-row"><td colspan="13">No tokens tracked yet. Turn on auto-discover, or add one directly below.</td></tr>';
     return;
   }
   if (filtered.length === 0) {
-    tokenRows.innerHTML = '<tr class="empty-row"><td colspan="12">No tracked tokens match the current filters. Try widening the market cap or age range, or lowering min score.</td></tr>';
+    tokenRows.innerHTML = '<tr class="empty-row"><td colspan="13">No tracked tokens match the current filters. Try widening the market cap or age range, or lowering min score.</td></tr>';
     return;
   }
 
@@ -267,6 +267,24 @@ function renderTable() {
       .filter(w => windows[w])
       .map(w => `${w} -${windows[w].drawdown_pct}%${windows[w].has_full_coverage ? '' : '*'}`)
       .join(' · ');
+
+    // Bundling severity - informational only (never filters a token out),
+    // so this always renders something rather than hiding low-info rows;
+    // "—" specifically means "no data" (non-Solana chain, or RugCheck
+    // hasn't returned anything yet), not "confirmed clean".
+    const bundling = t.bundling;
+    let bundlingHtml;
+    if (!bundling) {
+      bundlingHtml = `<span class="bundling-pill bundling-unknown" title="No bundling data - either a non-Solana chain, or RugCheck has nothing for this token yet">—</span>`;
+    } else {
+      const sevClass = bundling.label === 'Rugged' || bundling.label === 'Severe' ? 'bundling-severe'
+        : bundling.label === 'High' ? 'bundling-high'
+        : bundling.label === 'Moderate' ? 'bundling-moderate'
+        : 'bundling-low';
+      const tooltip = `${bundling.insider_wallets} of ${bundling.total_holders} holders (${bundling.insider_pct}%) traced to a common funding wallet by RugCheck`
+        + (bundling.rugged ? ' - RugCheck flags this token as already rugged' : '');
+      bundlingHtml = `<span class="bundling-pill ${sevClass}" title="${escapeHtml(tooltip)}">${escapeHtml(bundling.label)} ${bundling.insider_pct}%</span>`;
+    }
 
     return `
       <tr class="${isMatch ? 'qualifies' : ''}">
@@ -291,6 +309,7 @@ function renderTable() {
           <span class="score-pill ${scoreClass}" title="${escapeHtml(breakdownText)}">${t.score}</span>
           ${isMatch ? '<span class="badge badge-match">Match</span>' : ''}
         </td>
+        <td class="num">${bundlingHtml}</td>
         <td class="num">${fmtPrice(t.current_price)}</td>
         <td class="num">${fmtMoney(t.market_cap_usd)}</td>
         <td class="num pct-down"${proxyNote}>-${t.max_drawdown_pct}%${t.reference_high_is_proxy ? '*' : ''}</td>
