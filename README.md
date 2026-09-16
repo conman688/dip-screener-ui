@@ -28,14 +28,18 @@ Each token also gets a full **15m / 30m / 1h / 6h / 12h / 24h** drawdown-and-bou
 
 Tokens scoring at or above the alert threshold trigger a Telegram message (if configured) and appear in the Alerts feed.
 
-## Bundling check
+## Bundling / risk check
 
-A "Bundling" column shows how much of a token's holder base [RugCheck](https://rugcheck.xyz) traced back to a single common funding wallet — the same pattern a Bubblemaps-style graph shows as one wallet spoking out to dozens of others, which is a common setup for an artificial pump-then-dump. It's **informational only and never filters a token out** — a heavily bundled token can still show up and score well on its dip characteristics, but you'll see e.g. `Severe 94.8%` (94.8% of its holders traced to one funder) right on the row instead of finding out after clicking through to a chart.
+A "Bundling" column flags scam-shaped token setups — informational only, it **never filters a token out**. A heavily flagged token can still show up and score well on its dip characteristics, but you'll see the severity right on the row instead of finding out after clicking through to a chart. Two different checks feed it depending on chain, since no single free API covers both:
+
+- **Solana** — [RugCheck](https://rugcheck.xyz) traces how much of a token's holder base its graph analysis linked back to a single common funding wallet — the same pattern a Bubblemaps-style graph shows as one wallet spoking out to dozens of others. Severity = insider wallets ÷ total holders (not the raw count — 90 insiders out of 120 holders is a very different situation than the same 90 out of 5,000).
+- **EVM chains** (Ethereum, Base, BSC, Polygon, Arbitrum, Optimism, Avalanche, and — confirmed live — the "robinhood" chain) — [GoPlus Security](https://gopluslabs.io) doesn't do wallet-cluster tracing, so this is a genuinely different, complementary signal: unlocked top-10 holder concentration (excluding burned tokens and LP/router contracts) plus contract-level red flags (honeypot, mint authority still enabled, blacklist/pause ability, extreme buy/sell tax). Any single critical flag (e.g. honeypot) forces the token straight to "Severe" regardless of concentration.
+
+Both share the same Low/Moderate/High/Severe scale and color coding, but hovering a row's pill always says which check produced it — they are not the same metric and shouldn't be read as interchangeable.
 
 Notes:
-- **Solana only** — RugCheck's public API doesn't cover other chains, so EVM tokens (e.g. `robinhood`, `base`) show `—` (no data), not a false "clean" result.
-- Checked once per token then cached for `bundling_recheck_hours` (default 6h), so it isn't re-queried every 90-second cycle — cluster structure doesn't shift that fast.
-- Severity = insider wallets ÷ total holders, not the raw count, since 90 insider wallets out of 120 total holders is a very different situation than the same 90 out of 5,000.
+- A non-Solana, non-GoPlus-supported chain shows `—` (no data), never a false "clean" result.
+- Checked once per token then cached for `bundling_recheck_hours` (default 6h) so it isn't re-queried every 90-second cycle — holder/contract structure doesn't shift that fast. A failed or rate-limited check doesn't get cached, though — it just retries next cycle.
 
 ## Paper trading
 

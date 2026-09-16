@@ -241,21 +241,29 @@ def run_cycle():
         prior = known_universe_snapshot.get(key, {})
         all_time_high_price = prior.get("all_time_high_price")
 
-        # Bundling/insider-cluster check - only for the shortlist of tokens
-        # that already cleared eligibility (not the full ~150-token pool),
-        # and cached per-token so a token already checked recently doesn't
-        # cost another RugCheck call every single cycle.
+        # Bundling/risk check - only for the shortlist of tokens that
+        # already cleared eligibility (not the full ~150-token pool), and
+        # cached per-token so a token already checked recently doesn't cost
+        # another API call every single cycle. RugCheck (Solana) traces
+        # actual funding-wallet clusters; GoPlus (EVM chains) can't do that,
+        # so it's a different signal - holder concentration + contract risk
+        # flags - not a substitute for the same metric.
         bundling = prior.get("bundling")
         bundling_checked_at = prior.get("bundling_checked_at", 0)
         recheck_seconds = cfg_snapshot.get("bundling_recheck_hours", 6) * 3600
-        if (
-            cfg_snapshot.get("bundling_check_enabled", True)
-            and chain_id == "solana"
-            and (now - bundling_checked_at > recheck_seconds)
-        ):
-            report = core.fetch_rugcheck_report(token_address)
-            bundling = core.compute_bundling_severity(report)
-            bundling_checked_at = now
+        if cfg_snapshot.get("bundling_check_enabled", True) and (now - bundling_checked_at > recheck_seconds):
+            fresh_bundling = None
+            if chain_id == "solana":
+                fresh_bundling = core.compute_bundling_severity(core.fetch_rugcheck_report(token_address))
+            elif chain_id in core.GOPLUS_CHAIN_IDS:
+                fresh_bundling = core.compute_evm_risk_severity(core.fetch_goplus_report(chain_id, token_address))
+            if fresh_bundling is not None:
+                # Only count this as "checked" when the API actually gave
+                # us usable data - a rate-limited or transiently failed
+                # request should retry next cycle, not get locked out for
+                # bundling_recheck_hours the same as a confirmed result.
+                bundling = fresh_bundling
+                bundling_checked_at = now
 
         known_universe_updates[key] = {
             "label": meta["label"],

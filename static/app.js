@@ -268,22 +268,35 @@ function renderTable() {
       .map(w => `${w} -${windows[w].drawdown_pct}%${windows[w].has_full_coverage ? '' : '*'}`)
       .join(' · ');
 
-    // Bundling severity - informational only (never filters a token out),
-    // so this always renders something rather than hiding low-info rows;
-    // "—" specifically means "no data" (non-Solana chain, or RugCheck
-    // hasn't returned anything yet), not "confirmed clean".
+    // Bundling/risk severity - informational only (never filters a token
+    // out), so this always renders something rather than hiding low-info
+    // rows; "—" specifically means "no data" (unsupported chain, or the
+    // check hasn't run yet), not "confirmed clean". Two different sources
+    // feed this depending on chain: RugCheck traces actual common-funder
+    // wallet clusters on Solana; GoPlus (EVM chains) can't do that, so it
+    // reports holder concentration + contract risk flags instead - same
+    // severity/label scale, different underlying metric, so the tooltip
+    // spells out which one produced the number.
     const bundling = t.bundling;
     let bundlingHtml;
     if (!bundling) {
-      bundlingHtml = `<span class="bundling-pill bundling-unknown" title="No bundling data - either a non-Solana chain, or RugCheck has nothing for this token yet">—</span>`;
+      bundlingHtml = `<span class="bundling-pill bundling-unknown" title="No bundling/risk data - either an unsupported chain, or the check hasn't returned anything for this token yet">—</span>`;
     } else {
       const sevClass = bundling.label === 'Rugged' || bundling.label === 'Severe' ? 'bundling-severe'
         : bundling.label === 'High' ? 'bundling-high'
         : bundling.label === 'Moderate' ? 'bundling-moderate'
         : 'bundling-low';
-      const tooltip = `${bundling.insider_wallets} of ${bundling.total_holders} holders (${bundling.insider_pct}%) traced to a common funding wallet by RugCheck`
-        + (bundling.rugged ? ' - RugCheck flags this token as already rugged' : '');
-      bundlingHtml = `<span class="bundling-pill ${sevClass}" title="${escapeHtml(tooltip)}">${escapeHtml(bundling.label)} ${bundling.insider_pct}%</span>`;
+      let tooltip, pillText;
+      if (bundling.source === 'goplus') {
+        const flagsText = bundling.flags && bundling.flags.length ? ` — flags: ${bundling.flags.join(', ')}` : '';
+        tooltip = `EVM contract check (GoPlus): ${bundling.unlocked_top10_pct}% of supply held by unlocked top-10 wallets (excl. burned/pool addresses), ${bundling.holder_count} holders${flagsText}. This is NOT the same wallet-cluster trace RugCheck does for Solana.`;
+        pillText = `${bundling.label} ${bundling.unlocked_top10_pct}%`;
+      } else {
+        tooltip = `${bundling.insider_wallets} of ${bundling.total_holders} holders (${bundling.insider_pct}%) traced to a common funding wallet by RugCheck`
+          + (bundling.rugged ? ' - RugCheck flags this token as already rugged' : '');
+        pillText = `${bundling.label} ${bundling.insider_pct}%`;
+      }
+      bundlingHtml = `<span class="bundling-pill ${sevClass}" title="${escapeHtml(tooltip)}">${escapeHtml(pillText)}</span>`;
     }
 
     return `

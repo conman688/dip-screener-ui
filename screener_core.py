@@ -192,12 +192,143 @@ def compute_bundling_severity(rugcheck_report):
     else:
         label = "Low"
     return {
+        "source": "rugcheck",
         "insider_wallets": insiders,
         "total_holders": total_holders,
         "insider_pct": round(insider_pct, 1),
         "severity": round(severity, 1),
         "label": label,
         "rugged": rugged,
+    }
+
+
+# GoPlus Security's free Token Security API, used as the EVM-chain
+# complement to RugCheck above - confirmed live to support these chain ids,
+# including "robinhood" (an EVM chain DexScreener tracks under chainId
+# "robinhood", verified against the public chainid.network registry as EVM
+# chain 4663 and confirmed live against GoPlus's own supported_chains list).
+GOPLUS_CHAIN_IDS = {
+    "ethereum": "1",
+    "bsc": "56",
+    "polygon": "137",
+    "arbitrum": "42161",
+    "optimism": "10",
+    "base": "8453",
+    "avalanche": "43114",
+    "robinhood": "4663",
+}
+
+
+def fetch_goplus_report(chain_id: str, token_address: str):
+    """GoPlus token_security lookup for one EVM token - returns None for a
+    chain GoPlus doesn't cover, or on any request failure, same best-effort
+    contract as fetch_rugcheck_report(). GoPlus keys its result dict by
+    lowercased address, hence the .lower() on the way back out."""
+    numeric_id = GOPLUS_CHAIN_IDS.get(chain_id)
+    if not numeric_id:
+        return None
+    url = f"https://api.gopluslabs.io/api/v1/token_security/{numeric_id}?contract_addresses={token_address}"
+    data = http_get_json(url, timeout=12)
+    if not isinstance(data, dict) or data.get("code") != 1:
+        return None
+    result = data.get("result") or {}
+    return result.get(token_address.lower())
+
+
+def _goplus_flag(entry, key):
+    return str(entry.get(key, "0")) == "1"
+
+
+def compute_evm_risk_severity(entry):
+    """EVM-chain complement to compute_bundling_severity() above - GoPlus
+    doesn't trace common-funding-wallet clusters the way RugCheck's graph
+    analysis does for Solana, so this is a DIFFERENT signal, not the same
+    metric reused: unlocked top-10 holder concentration (excluding burned
+    tokens and contract/pool addresses - a Uniswap pool holding tokens
+    isn't a "whale wallet" in the risk sense) plus a set of contract-level
+    red flags (honeypot, mint authority, ownership control, blacklisting,
+    pausable transfers, extreme tax). Both correlate with the same "coin
+    destined to be dumped on you" outcome the Solana check targets, without
+    being able to prove the literal "one wallet funded 95 others" pattern -
+    the UI is expected to label this distinctly from the RugCheck result,
+    not present it as equivalent.
+
+    Returns None if GoPlus has no usable data (unsupported chain, request
+    failed, or holder data missing) - never treated as "0% risk"."""
+    if not entry or not entry.get("holder_count"):
+        return None
+
+    unlocked_pct = 0.0
+    for h in entry.get("holders") or []:
+        if str(h.get("is_locked", "0")) == "1":
+            continue
+        if str(h.get("is_contract", "0")) == "1":
+            continue
+        addr = (h.get("address") or "").lower()
+        if "dead" in addr or addr == "0x0000000000000000000000000000000000000000":
+            continue
+        try:
+            unlocked_pct += float(h.get("percent") or 0) * 100
+        except (TypeError, ValueError):
+            continue
+
+    # Critical: any single one of these makes the token effectively
+    # unsellable or untrustworthy regardless of holder concentration.
+    critical_flags = [
+        ("is_honeypot", "honeypot - can't sell"),
+        ("cannot_sell_all", "can't sell full balance"),
+        ("cannot_buy", "buying blocked"),
+        ("is_blacklisted", "owner can blacklist wallets"),
+        ("selfdestruct", "contract can self-destruct"),
+        ("transfer_pausable", "transfers can be paused"),
+    ]
+    # Soft: not fatal alone, but each is a lever a bad actor could pull
+    # later - contributes partial severity rather than an instant "Severe".
+    soft_flags = [
+        ("is_mintable", "supply can be minted"),
+        ("is_proxy", "contract is upgradeable"),
+        ("hidden_owner", "hidden owner address"),
+        ("can_take_back_ownership", "ownership can be reclaimed"),
+        ("owner_change_balance", "owner can change balances"),
+        ("slippage_modifiable", "tax/slippage can be changed"),
+        ("personal_slippage_modifiable", "per-wallet tax can be set"),
+        ("anti_whale_modifiable", "anti-whale limits can be changed"),
+        ("trading_cooldown", "trading cooldown enabled"),
+    ]
+
+    triggered = [label for key, label in critical_flags if _goplus_flag(entry, key)]
+    soft_triggered = [label for key, label in soft_flags if _goplus_flag(entry, key)]
+
+    def _tax_pct(key):
+        try:
+            return float(entry.get(key) or 0) * 100
+        except (TypeError, ValueError):
+            return 0.0
+    buy_tax, sell_tax = _tax_pct("buy_tax"), _tax_pct("sell_tax")
+    if buy_tax >= 10 or sell_tax >= 10:
+        triggered.append(f"high tax (buy {buy_tax:.0f}% / sell {sell_tax:.0f}%)")
+
+    if triggered:
+        severity = 100.0
+        label = "Severe"
+    else:
+        severity = clamp(unlocked_pct + len(soft_triggered) * 8, 0, 100)
+        if severity >= 40:
+            label = "Severe"
+        elif severity >= 20:
+            label = "High"
+        elif severity >= 8:
+            label = "Moderate"
+        else:
+            label = "Low"
+
+    return {
+        "source": "goplus",
+        "unlocked_top10_pct": round(unlocked_pct, 1),
+        "flags": triggered + soft_triggered,
+        "severity": round(severity, 1),
+        "label": label,
+        "holder_count": entry.get("holder_count"),
     }
 
 
@@ -596,10 +727,18 @@ def format_alert(key, status):
     proxy_note = " (approx., limited history so far)" if status.get("reference_high_is_proxy") else ""
     short_term_note = "" if status.get("short_term_dip_has_coverage") else " (limited history so far)"
     bundling = status.get("bundling")
-    # Only shown when RugCheck actually has data (Solana only) - silence
+    # Only shown when a bundling/risk check actually has data - silence
     # rather than a misleading "unknown = fine" line for everything else.
+    # Two shapes depending on chain (see compute_bundling_severity vs
+    # compute_evm_risk_severity) - format each accordingly.
     bundling_line = ""
-    if bundling:
+    if bundling and bundling.get("source") == "goplus":
+        flags_note = f" — {', '.join(bundling['flags'])}" if bundling.get("flags") else ""
+        bundling_line = (
+            f"Risk (GoPlus): {bundling['label']} — {bundling['unlocked_top10_pct']}% held by "
+            f"unlocked top-10 wallets{flags_note}\n"
+        )
+    elif bundling:
         bundling_line = (
             f"Bundling: {bundling['label']} — {bundling['insider_pct']}% of holders "
             f"({bundling['insider_wallets']}/{bundling['total_holders']}) traced to a common funder\n"
