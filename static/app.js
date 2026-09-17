@@ -45,12 +45,19 @@ const filterInputs = {
   dipMax: document.getElementById('f-dip-max'),
   liquidity: document.getElementById('f-liquidity'),
   volume: document.getElementById('f-volume'),
+  hideRisky: document.getElementById('f-hide-risky'),
 };
 const filterResetBtn = document.getElementById('filter-reset-btn');
+const conservativePresetBtn = document.getElementById('conservative-preset-btn');
 
 const FILTER_DEFAULTS = {
-  score: 0, mcapMin: 0, mcapMax: 0, ageMin: 0, ageMax: 0, dipMin: 0, dipMax: 0, liquidity: 0, volume: 0,
+  score: 0, mcapMin: 0, mcapMax: 0, ageMin: 0, ageMax: 0, dipMin: 0, dipMax: 0, liquidity: 0, volume: 0, hideRisky: false,
 };
+
+// Only "Moderate" and up hides a row - "Low" and "Unknown" (unsupported
+// chain, or the check hasn't run yet) both stay visible, since an
+// unverified token isn't the same as a confirmed-risky one.
+const HIDE_RISKY_SEVERITY_THRESHOLD = 20;
 
 function currentFilters() {
   const n = (el, fallback) => {
@@ -67,6 +74,7 @@ function currentFilters() {
     dipMax: n(filterInputs.dipMax, 0),
     liquidity: n(filterInputs.liquidity, 0),
     volume: n(filterInputs.volume, 0),
+    hideRisky: !!filterInputs.hideRisky.checked,
   };
 }
 
@@ -80,6 +88,7 @@ function applyFiltersToInputs(f) {
   filterInputs.dipMax.value = f.dipMax || '';
   filterInputs.liquidity.value = f.liquidity || '';
   filterInputs.volume.value = f.volume || '';
+  filterInputs.hideRisky.checked = !!f.hideRisky;
 }
 
 function passesFilters(t, f) {
@@ -92,11 +101,17 @@ function passesFilters(t, f) {
   if (f.dipMax && t.max_drawdown_pct > f.dipMax) return false;
   if (f.liquidity && t.liquidity_usd < f.liquidity) return false;
   if (f.volume && t.volume24h_usd < f.volume) return false;
+  if (f.hideRisky && t.bundling_severity >= HIDE_RISKY_SEVERITY_THRESHOLD) return false;
   return true;
 }
 
 Object.values(filterInputs).forEach(el => {
   el.addEventListener('input', renderTable);
+});
+
+conservativePresetBtn.addEventListener('click', () => {
+  applyFiltersToInputs({ ...FILTER_DEFAULTS, liquidity: 50000, mcapMin: 100000, hideRisky: true });
+  renderTable();
 });
 
 filterResetBtn.addEventListener('click', () => {
@@ -242,11 +257,11 @@ function renderTable() {
     + (latestTokens.length !== filtered.length ? ` (of ${latestTokens.length})` : '');
 
   if (latestTokens.length === 0) {
-    tokenRows.innerHTML = '<tr class="empty-row"><td colspan="13">No tokens tracked yet. Turn on auto-discover, or add one directly below.</td></tr>';
+    tokenRows.innerHTML = '<tr class="empty-row"><td colspan="14">No tokens tracked yet. Turn on auto-discover, or add one directly below.</td></tr>';
     return;
   }
   if (filtered.length === 0) {
-    tokenRows.innerHTML = '<tr class="empty-row"><td colspan="13">No tracked tokens match the current filters. Try widening the market cap or age range, or lowering min score.</td></tr>';
+    tokenRows.innerHTML = '<tr class="empty-row"><td colspan="14">No tracked tokens match the current filters. Try widening the market cap or age range, or lowering min score.</td></tr>';
     return;
   }
 
@@ -257,7 +272,7 @@ function renderTable() {
     const scoreClass = t.score >= 70 ? 'score-high' : t.score >= 40 ? 'score-mid' : 'score-low';
     const proxyNote = t.reference_high_is_proxy ? ' title="Recent-high estimated from 24h/6h/1h change - limited history so far"' : '';
     const breakdown = t.score_breakdown || {};
-    const breakdownText = `Drawdown ${breakdown.drawdown_quality} · Short-term dip ${breakdown.short_term_dip} · Volume ${breakdown.volume_retention} · Liquidity ${breakdown.liquidity} · Momentum ${breakdown.buy_sell_momentum} · Activity ${breakdown.tx_activity} · Age ${breakdown.age}`;
+    const breakdownText = `Drawdown ${breakdown.drawdown_quality} · Short-term dip ${breakdown.short_term_dip} · Volume ${breakdown.volume_retention} · Liquidity ${breakdown.liquidity} · Momentum ${breakdown.buy_sell_momentum} · Activity ${breakdown.tx_activity} · Narrative ${breakdown.narrative_presence} · Age ${breakdown.age}`;
 
     // Per-window (15m..24h) drawdown breakdown, shown as a hover tooltip on
     // the compact "Recent dip" cell - '*' flags a window our stored history
@@ -299,6 +314,25 @@ function renderTable() {
       bundlingHtml = `<span class="bundling-pill ${sevClass}" title="${escapeHtml(tooltip)}">${escapeHtml(pillText)}</span>`;
     }
 
+    // Narrative/legitimacy presence - built from website/social links
+    // already present on every market-data fetch (see app.py), not a
+    // measure of actual hype/virality (that would need a paid social API).
+    const narrative = t.narrative || { label: 'None', has_website: false, has_twitter: false, has_telegram: false, has_discord: false };
+    const narrClass = narrative.label === 'Strong' ? 'narrative-strong'
+      : narrative.label === 'Some' ? 'narrative-some'
+      : narrative.label === 'Minimal' ? 'narrative-minimal'
+      : 'narrative-none';
+    const narrChannels = [
+      narrative.has_website ? 'website' : null,
+      narrative.has_twitter ? 'Twitter' : null,
+      narrative.has_telegram ? 'Telegram' : null,
+      narrative.has_discord ? 'Discord' : null,
+    ].filter(Boolean);
+    const narrTooltip = narrChannels.length
+      ? `Has: ${narrChannels.join(', ')}. This is a legitimacy proxy (real project vs. bare contract), not a virality/hype measure.`
+      : `No website or socials found for this token - could be a real project that just hasn't filled its profile in, or a bare/anonymous deploy.`;
+    const narrativeHtml = `<span class="bundling-pill ${narrClass}" title="${escapeHtml(narrTooltip)}">${escapeHtml(narrative.label)}</span>`;
+
     return `
       <tr class="${isMatch ? 'qualifies' : ''}">
         <td class="col-star">
@@ -323,6 +357,7 @@ function renderTable() {
           ${isMatch ? '<span class="badge badge-match">Match</span>' : ''}
         </td>
         <td class="num">${bundlingHtml}</td>
+        <td class="num">${narrativeHtml}</td>
         <td class="num">${fmtPrice(t.current_price)}</td>
         <td class="num">${fmtMoney(t.market_cap_usd)}</td>
         <td class="num pct-down"${proxyNote}>-${t.max_drawdown_pct}%${t.reference_high_is_proxy ? '*' : ''}</td>

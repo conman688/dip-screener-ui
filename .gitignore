@@ -5,3 +5,7 @@ __pycache__/
 # hold a Telegram bot token/chat id - keep the example checked in instead.
 state.json
 config.json
+
+# save_json()'s atomic-write temp file (app.py) - briefly exists mid-save,
+# can get left behind (empty) if the process is killed at the wrong instant.
+*.tmp

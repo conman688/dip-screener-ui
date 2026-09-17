@@ -235,7 +235,19 @@ body {
   border-color: var(--gold-line);
 }
 
-.filter-actions { justify-content: flex-end; }
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-faint);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.checkbox-label input { width: auto; }
+
+.filter-actions { justify-content: flex-end; gap: 8px; flex-direction: row; align-items: flex-end; }
 
 .filter-note {
   margin: 0;
@@ -271,6 +283,11 @@ body {
 .bundling-pill.bundling-high { color: var(--dip); background: rgba(209, 120, 88, 0.14); }
 .bundling-pill.bundling-severe { color: #241A08; background: var(--dip); }
 .bundling-pill.bundling-unknown { color: var(--text-faint); background: var(--surface-raised); }
+
+.bundling-pill.narrative-strong { color: var(--gain); background: rgba(111, 190, 147, 0.12); }
+.bundling-pill.narrative-some { color: var(--gold); background: var(--gold-soft); }
+.bundling-pill.narrative-minimal { color: var(--text-dim); background: var(--surface-raised); }
+.bundling-pill.narrative-none { color: var(--text-faint); background: var(--surface-raised); }
 
 /* ---------- Scan coverage (funnel) ---------- */
 

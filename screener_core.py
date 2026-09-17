@@ -592,9 +592,9 @@ def evaluate_token(history, meta, cfg, now, all_time_high_price=None):
 
     # ---- Component scores (0-100 each), weighted:
     # 25% drawdown quality, 20% short-term dip quality (the 15m/30m/1h
-    # flash-dip signal - the main "catch it as it dips" lever), 15% volume
+    # flash-dip signal - the main "catch it as it dips" lever), 10% volume
     # retention, 15% liquidity, 5% buy/sell momentum, 10% transaction
-    # activity, 5% holder behavior (approximated - see note below), 5% token
+    # activity, 10% narrative/legitimacy presence (see note below), 5% token
     # age.
     #
     # Buy/sell momentum is deliberately a small weight, not a large one: a
@@ -652,23 +652,50 @@ def evaluate_token(history, meta, cfg, now, all_time_high_price=None):
         short_term_dip_score = max(0, 100 - (short_term_dip_pct - 45) * 2)
     short_term_dip_score = clamp(short_term_dip_score, 0, 100)
 
-    # Holder behavior isn't available from DexScreener's pair data at all -
-    # rather than fabricate a number, this is left as a neutral midpoint and
-    # clearly labeled as unavailable in the breakdown, so it's honest about
-    # what it can't see instead of pretending to have holder data.
-    holder_score = 50
-    holder_score_available = False
+    # Narrative/legitimacy presence: built entirely from data already
+    # pulled on every market-data fetch (DexScreener's info.websites /
+    # info.socials - no extra API calls) as a cheap proxy for "does this
+    # look like a real project with a community," not a measure of actual
+    # social-media virality/hype - detecting whether something is genuinely
+    # trending right now would need a paid social-listening API this tool
+    # doesn't have. A real early-stage project without a filled-in bio, or
+    # a wildly viral meme that never bothered with a website, will both
+    # slip through this heuristic; treat it as one more data point, not a
+    # verdict. This replaces the old "holder behavior" placeholder, which
+    # was always a fabricated neutral 50 - this is honest (if imperfect)
+    # real data instead of a fake stand-in.
+    websites = meta.get("websites") or []
+    socials = meta.get("socials") or []
+    social_types = {s.get("type") for s in socials if isinstance(s, dict) and s.get("type")}
+    narrative_points = (1 if websites else 0) + min(len(social_types), 3)
+    if narrative_points >= 4:
+        narrative_label = "Strong"
+    elif narrative_points >= 2:
+        narrative_label = "Some"
+    elif narrative_points >= 1:
+        narrative_label = "Minimal"
+    else:
+        narrative_label = "None"
+    narrative_score = clamp(narrative_points / 4 * 100, 0, 100)
+    narrative = {
+        "label": narrative_label,
+        "has_website": bool(websites),
+        "has_twitter": "twitter" in social_types,
+        "has_telegram": "telegram" in social_types,
+        "has_discord": "discord" in social_types,
+        "social_count": len(social_types),
+    }
 
     age_score = clamp(age_hours / (7 * 24) * 100, 0, 100)  # maxes out at 7 days old
 
     score = round(
         drawdown_score * 0.25 +
         short_term_dip_score * 0.20 +
-        volume_score * 0.15 +
+        volume_score * 0.10 +
         liquidity_score * 0.15 +
         momentum_score * 0.05 +
         activity_score * 0.10 +
-        holder_score * 0.05 +
+        narrative_score * 0.10 +
         age_score * 0.05
     )
 
@@ -696,6 +723,8 @@ def evaluate_token(history, meta, cfg, now, all_time_high_price=None):
         "liquidity_usd": liquidity,
         "volume24h_usd": volume,
         "volume_5m_usd": meta.get("volume_5m_usd", 0),
+        "narrative": narrative,
+        "narrative_score": round(narrative_score),
         "score": score,
         "score_breakdown": {
             "drawdown_quality": round(drawdown_score),
@@ -704,8 +733,7 @@ def evaluate_token(history, meta, cfg, now, all_time_high_price=None):
             "liquidity": round(liquidity_score),
             "buy_sell_momentum": round(momentum_score),
             "tx_activity": round(activity_score),
-            "holder_behavior": round(holder_score),
-            "holder_behavior_available": holder_score_available,
+            "narrative_presence": round(narrative_score),
             "age": round(age_score),
         },
         "points_tracked": len(history),

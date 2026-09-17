@@ -73,12 +73,19 @@
         <label>Min 24h volume ($)</label>
         <input type="number" id="f-volume" min="0" step="1000">
       </div>
+      <div class="filter-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="f-hide-risky">
+          Hide Moderate+ bundling risk
+        </label>
+      </div>
       <div class="filter-group filter-actions">
         <label>&nbsp;</label>
+        <button class="btn btn-ghost btn-small" id="conservative-preset-btn" title="Min $50K liquidity, min $100K market cap, hides Moderate/High/Severe bundling risk">Conservative preset</button>
         <button class="btn btn-ghost btn-small" id="filter-reset-btn">Reset</button>
       </div>
     </div>
-    <p class="field-hint filter-note">These narrow what's shown. Drawdown depth, volume retention, and buy/sell momentum are scoring inputs now, not hard filters — see Score below and the breakdown on each row. Every row here already cleared the 5-minute volume + live-buy-activity floor in Settings, so dead pools shouldn't show up at all.</p>
+    <p class="field-hint filter-note">These narrow what's shown. Drawdown depth, volume retention, and buy/sell momentum are scoring inputs now, not hard filters — see Score below and the breakdown on each row. Every row here already cleared the 5-minute volume + live-buy-activity floor in Settings, so dead pools shouldn't show up at all. New to this? Try the <strong>Conservative preset</strong> below — it raises the liquidity/market-cap bar and hides tokens flagged Moderate risk or worse.</p>
 
     <div class="table-scroll">
       <table class="token-table">
@@ -88,6 +95,7 @@
             <th class="sortable" data-sort="label">Token</th>
             <th class="sortable num" data-sort="score">Score</th>
             <th class="sortable num" data-sort="bundling_severity" title="Solana: share of holders RugCheck traced to a common funding wallet. Other EVM chains: GoPlus holder-concentration + contract-risk flags (a different, complementary signal - not the same wallet-cluster trace). Informational only, never filters a token out.">Bundling</th>
+            <th class="sortable num" data-sort="narrative_score" title="Does this look like a real project with a community? Built from whether it has a website/Twitter/Telegram/Discord - not a measure of actual hype or virality, just a cheap legitimacy proxy. Counted in the score.">Narrative</th>
             <th class="sortable num" data-sort="current_price">Price</th>
             <th class="sortable num" data-sort="market_cap_usd">Market cap</th>
             <th class="sortable num" data-sort="max_drawdown_pct">Drawdown</th>
@@ -101,7 +109,7 @@
         </thead>
         <tbody id="token-rows">
           <tr class="empty-row">
-            <td colspan="13">No tokens tracked yet. Turn on auto-discover, or add one directly below.</td>
+            <td colspan="14">No tokens tracked yet. Turn on auto-discover, or add one directly below.</td>
           </tr>
         </tbody>
       </table>

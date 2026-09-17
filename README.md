@@ -21,7 +21,8 @@ Every poll cycle (90 seconds by default):
 4. **Scoring** — every eligible token gets a 0-100 score instead of a hard pass/fail, weighted toward catching a dip as it happens rather than after it's already bounced:
    - **Short-term dip quality (20%)** — the sharpest pullback across the 15m/30m/1h windows, centered on a ~40% flash-dip sweet spot. This is the main "catch it right now" signal.
    - **Drawdown quality (25%)** — how far below its tracked all-time high, with a 20-70% sweet spot.
-   - Volume retention (15%), liquidity (15%), transaction activity (10%), token age (5%), holder behavior (5%, unavailable/neutral).
+   - Volume retention (10%), liquidity (15%), transaction activity (10%), token age (5%).
+   - **Narrative/legitimacy presence (10%)** — has a website and/or Twitter/Telegram/Discord linked. This is a cheap proxy for "real project with a community" built from data already fetched every cycle, **not** a measure of actual hype or virality (that would need a paid social-listening API this tool doesn't have) — a genuinely viral meme with no filled-in bio, or an early real project that hasn't set one up yet, can both slip through it.
    - **Buy/sell momentum (5%, deliberately small)** — a token that's actively dipping is naturally sell-heavy; that's what a dip *is*. This isn't allowed to drag the score down much just because recovery buying hasn't shown up yet.
 
 Each token also gets a full **15m / 30m / 1h / 6h / 12h / 24h** drawdown-and-bounce breakdown (visible on hover over the "Recent dip" column), instead of a single all-time high-to-low number.
@@ -40,6 +41,15 @@ Both share the same Low/Moderate/High/Severe scale and color coding, but hoverin
 Notes:
 - A non-Solana, non-GoPlus-supported chain shows `—` (no data), never a false "clean" result.
 - Checked once per token then cached for `bundling_recheck_hours` (default 6h) so it isn't re-queried every 90-second cycle — holder/contract structure doesn't shift that fast. A failed or rate-limited check doesn't get cached, though — it just retries next cycle.
+
+## Built for small, careful portfolios
+
+This isn't tuned to maximize the number of tokens shown — it's tuned to help you not gamble away a small amount of money:
+
+- The **Narrative** column (see Scoring above) nudges the ranking toward tokens that look like real projects rather than anonymous copy-paste deploys.
+- The **Bundling** column surfaces scam-shaped red flags right on the row instead of making you dig for them.
+- A one-click **Conservative preset** in the filter bar (Tracked tokens panel) raises the bar to $50K+ liquidity and $100K+ market cap and hides anything flagged Moderate risk or worse — a fast way to cut the list down to the tokens most worth a beginner's attention. There's also a standalone **"Hide Moderate+ bundling risk"** checkbox if you just want that part without the size filters.
+- None of this is a hard eligibility gate — a token can still be discovered and scored even if it wouldn't pass the Conservative preset. The filters are a *view*, so you can always widen back out; they never limit what's actually being tracked underneath.
 
 ## Paper trading
 

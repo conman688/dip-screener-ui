@@ -208,6 +208,7 @@ def run_cycle():
         market_cap = float(best.get("marketCap") or best.get("fdv") or 0)
         txns_h1 = (best.get("txns") or {}).get("h1") or {}
         txns_m5 = (best.get("txns") or {}).get("m5") or {}
+        info = best.get("info") or {}
         meta = {
             "label": (best.get("baseToken") or {}).get("symbol", label),
             "url": best.get("url", ""),
@@ -215,6 +216,11 @@ def run_cycle():
             "volume24h_usd": float((best.get("volume") or {}).get("h24") or 0),
             "volume_5m_usd": float((best.get("volume") or {}).get("m5") or 0),
             "market_cap_usd": market_cap,
+            # Narrative/legitimacy signal inputs (see
+            # screener_core.evaluate_token) - already present on every
+            # market-data fetch, no extra API call needed.
+            "websites": info.get("websites") or [],
+            "socials": info.get("socials") or [],
             "pair_created_at": (pair_created_ms / 1000) if pair_created_ms else now,
             "current_price": price,
             "price_change_m5_pct": (best.get("priceChange") or {}).get("m5"),
