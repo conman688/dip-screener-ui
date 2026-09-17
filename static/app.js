@@ -24,7 +24,46 @@ let isRunning = true;
 let currentWatchlist = []; // [[chain_id, address, label], ...] — mirrors server state
 let latestTokens = [];     // last full, unfiltered token list from /api/status
 let alertScoreThreshold = 70; // loaded from config, used only to badge rows - not a filter
+let alertRunnerScoreThreshold = 75; // same, for Runner mode's Match badge
 let sortState = { column: 'score', direction: 'desc' };
+
+// ---------------- Screening mode ----------------
+// Dip and Runner are opposite screening directions over the SAME
+// underlying tracked-token data - see screener_core.evaluate_token()'s
+// two scores. This only changes what the client displays/sorts/badges;
+// both scores are always computed server-side every cycle regardless of
+// which tab is showing, so switching modes never waits on a re-scan.
+let screenMode = 'dip';
+const MODE_TAGLINES = {
+  dip: 'Watching for coins dipping hard, right now — before the bounce',
+  runner: 'Watching for coins running hot on huge volume, right now — while filtering for obvious scams',
+};
+const modeTagline = document.getElementById('mode-tagline');
+const modeDipBtn = document.getElementById('mode-dip-btn');
+const modeRunnerBtn = document.getElementById('mode-runner-btn');
+const fScoreLabel = document.getElementById('f-score-label');
+
+function scoreField() { return screenMode === 'runner' ? 'runner_score' : 'score'; }
+function currentAlertThreshold() { return screenMode === 'runner' ? alertRunnerScoreThreshold : alertScoreThreshold; }
+
+function setMode(mode) {
+  if (mode === screenMode) return;
+  screenMode = mode;
+  modeDipBtn.classList.toggle('active', mode === 'dip');
+  modeRunnerBtn.classList.toggle('active', mode === 'runner');
+  modeTagline.textContent = MODE_TAGLINES[mode];
+  fScoreLabel.textContent = mode === 'runner' ? 'Min score (Runner)' : 'Min score (Dip)';
+  // Re-sort by the new mode's own score by default, same as clicking a
+  // column header fresh - but only when the user was already sorting by
+  // score, so a deliberate sort by e.g. Liquidity survives a mode switch.
+  if (sortState.column === 'score' || sortState.column === 'runner_score') {
+    sortState = { column: scoreField(), direction: 'desc' };
+    updateSortIndicators();
+  }
+  renderTable();
+}
+modeDipBtn.addEventListener('click', () => setMode('dip'));
+modeRunnerBtn.addEventListener('click', () => setMode('runner'));
 
 // ---------------- Filters ----------------
 // These are now PURE VIEW filters - they only change what's displayed from
@@ -92,7 +131,7 @@ function applyFiltersToInputs(f) {
 }
 
 function passesFilters(t, f) {
-  if (f.score && t.score < f.score) return false;
+  if (f.score && t[scoreField()] < f.score) return false;
   if (f.mcapMin && t.market_cap_usd < f.mcapMin) return false;
   if (f.mcapMax && t.market_cap_usd > f.mcapMax) return false;
   if (f.ageMin && t.age_hours < f.ageMin) return false;
@@ -124,7 +163,10 @@ filterResetBtn.addEventListener('click', () => {
 
 document.querySelectorAll('th.sortable').forEach(th => {
   th.addEventListener('click', () => {
-    const col = th.dataset.sort;
+    // The Score column's data-sort is always "score" in the markup -
+    // translate to whichever field the active mode actually uses so the
+    // header doesn't need to be rewritten on every mode switch.
+    const col = th.dataset.sort === 'score' ? scoreField() : th.dataset.sort;
     if (sortState.column === col) {
       sortState.direction = sortState.direction === 'asc' ? 'desc' : 'asc';
     } else {
@@ -138,7 +180,8 @@ document.querySelectorAll('th.sortable').forEach(th => {
 function updateSortIndicators() {
   document.querySelectorAll('th.sortable').forEach(th => {
     th.classList.remove('sort-asc', 'sort-desc');
-    if (th.dataset.sort === sortState.column) {
+    const col = th.dataset.sort === 'score' ? scoreField() : th.dataset.sort;
+    if (col === sortState.column) {
       th.classList.add(sortState.direction === 'asc' ? 'sort-asc' : 'sort-desc');
     }
   });
@@ -255,7 +298,8 @@ const FUNNEL_LABELS = [
   ['fetched_market_data', 'Market data fetched'],
   ['passed_eligibility', 'Passed eligibility floor'],
   ['scored', 'Scored and ranked'],
-  ['alert_threshold_met', 'At/above alert threshold'],
+  ['alert_threshold_met', 'At/above dip alert threshold'],
+  ['runner_threshold_met', 'At/above runner alert threshold'],
 ];
 
 function renderFunnel(funnel) {
@@ -274,22 +318,30 @@ function renderTable() {
     + (latestTokens.length !== filtered.length ? ` (of ${latestTokens.length})` : '');
 
   if (latestTokens.length === 0) {
-    tokenRows.innerHTML = '<tr class="empty-row"><td colspan="14">No tokens tracked yet. Turn on auto-discover, or add one directly below.</td></tr>';
+    tokenRows.innerHTML = '<tr class="empty-row"><td colspan="15">No tokens tracked yet. Turn on auto-discover, or add one directly below.</td></tr>';
     return;
   }
   if (filtered.length === 0) {
-    tokenRows.innerHTML = '<tr class="empty-row"><td colspan="14">No tracked tokens match the current filters. Try widening the market cap or age range, or lowering min score.</td></tr>';
+    tokenRows.innerHTML = '<tr class="empty-row"><td colspan="15">No tracked tokens match the current filters. Try widening the market cap or age range, or lowering min score.</td></tr>';
     return;
   }
 
   tokenRows.innerHTML = filtered.map(t => {
     const bounce1hClass = t.bounce_1h_pct >= 0 ? 'pct-up' : 'pct-down';
     const starred = !!t.is_watchlisted;
-    const isMatch = t.score >= alertScoreThreshold;
-    const scoreClass = t.score >= 70 ? 'score-high' : t.score >= 40 ? 'score-mid' : 'score-low';
+    const displayScore = t[scoreField()];
+    const isMatch = displayScore >= currentAlertThreshold();
+    const scoreClass = displayScore >= 70 ? 'score-high' : displayScore >= 40 ? 'score-mid' : 'score-low';
     const proxyNote = t.reference_high_is_proxy ? ' title="Recent-high estimated from 24h/6h/1h change - limited history so far"' : '';
-    const breakdown = t.score_breakdown || {};
-    const breakdownText = `Drawdown ${breakdown.drawdown_quality} · Short-term dip ${breakdown.short_term_dip} · Volume ${breakdown.volume_retention} · Liquidity ${breakdown.liquidity} · Momentum ${breakdown.buy_sell_momentum} · Activity ${breakdown.tx_activity} · Narrative ${breakdown.narrative_presence} · Age ${breakdown.age}`;
+    const breakdownText = screenMode === 'runner'
+      ? (() => {
+          const b = t.runner_score_breakdown || {};
+          return `Volume surge ${b.volume_surge} · Price momentum ${b.price_momentum} · Buy dominance ${b.buy_dominance} · Liquidity ${b.liquidity} · Narrative ${b.narrative_presence} · Risk penalty ${b.risk_penalty}`;
+        })()
+      : (() => {
+          const b = t.score_breakdown || {};
+          return `Drawdown ${b.drawdown_quality} · Short-term dip ${b.short_term_dip} · Volume ${b.volume_retention} · Liquidity ${b.liquidity} · Momentum ${b.buy_sell_momentum} · Activity ${b.tx_activity} · Narrative ${b.narrative_presence} · Age ${b.age}`;
+        })();
 
     // Per-window (15m..24h) drawdown breakdown, shown as a hover tooltip on
     // the compact "Recent dip" cell - '*' flags a window our stored history
@@ -395,7 +447,7 @@ function renderTable() {
           ${t.url ? `<a class="token-link" href="${escapeHtml(t.url)}" target="_blank" rel="noopener">view chart</a>` : ''}
         </td>
         <td class="num">
-          <span class="score-pill ${scoreClass}" title="${escapeHtml(breakdownText)}">${t.score}</span>
+          <span class="score-pill ${scoreClass}" title="${escapeHtml(breakdownText)}">${displayScore}</span>
           ${isMatch ? '<span class="badge badge-match">Match</span>' : ''}
         </td>
         <td class="num">${bundlingHtml}</td>
@@ -409,6 +461,7 @@ function renderTable() {
         <td class="num">${fmtMoney(t.liquidity_usd)}</td>
         <td class="num">${fmtMoney(t.volume_5m_usd)}</td>
         <td class="num">${fmtMoney(t.volume24h_usd)}</td>
+        <td class="num" title="${t.volume_surge_ratio}x its own recent average · last 5min running ${t.volume_recency_ratio}x today's average pace">${t.volume_surge_ratio}x</td>
       </tr>
     `;
   }).join('');
@@ -766,7 +819,10 @@ async function loadConfig() {
   document.getElementById('cfg-telegram-token').value = cfg.telegram_bot_token;
   document.getElementById('cfg-telegram-chat').value = cfg.telegram_chat_id;
   document.getElementById('cfg-quicknode-solana').value = cfg.quicknode_solana_wss_url || '';
+  document.getElementById('cfg-runner-alerts-enabled').checked = cfg.runner_alerts_enabled !== false;
+  document.getElementById('cfg-runner-alert-score').value = cfg.alert_runner_score_threshold;
   alertScoreThreshold = Number(cfg.alert_score_threshold) || 70;
+  alertRunnerScoreThreshold = Number(cfg.alert_runner_score_threshold) || 75;
 
   applyFiltersToInputs(FILTER_DEFAULTS);
 }
@@ -778,6 +834,8 @@ settingsForm.addEventListener('submit', async (e) => {
     auto_discover: document.getElementById('cfg-auto-discover').checked,
     poll_interval_seconds: Number(document.getElementById('cfg-poll-interval').value),
     alert_score_threshold: Number(document.getElementById('cfg-alert-score').value),
+    runner_alerts_enabled: document.getElementById('cfg-runner-alerts-enabled').checked,
+    alert_runner_score_threshold: Number(document.getElementById('cfg-runner-alert-score').value),
     confirm_polls: Number(document.getElementById('cfg-confirm-polls').value),
     known_universe_retention_days: Number(document.getElementById('cfg-retention-days').value),
     telegram_bot_token: document.getElementById('cfg-telegram-token').value,
@@ -792,6 +850,7 @@ settingsForm.addEventListener('submit', async (e) => {
   });
 
   alertScoreThreshold = payload.alert_score_threshold;
+  alertRunnerScoreThreshold = payload.alert_runner_score_threshold;
   renderTable();
   saveNote.textContent = 'Saved';
   saveNote.classList.add('show');

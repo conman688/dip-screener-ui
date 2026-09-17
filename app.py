@@ -1,7 +1,11 @@
 """
-Dip Screener — local web dashboard
-===================================
+Dip & Runner Screener — local web dashboard
+============================================
 Run this, then open http://127.0.0.1:5050 in your browser.
+
+Screens the same tracked-token pool two opposite ways every cycle - dip
+(down hard, might bounce) and runner (huge volume, running hard right
+now) - see screener_core.evaluate_token()'s two scores.
 
 Everything runs locally on your own laptop: the Flask server, the
 background polling thread, and the config file. Nothing is sent
@@ -63,6 +67,13 @@ DEFAULT_CONFIG = {
     "min_volume_24h_usd": 0,
 
     "alert_score_threshold": 70,
+    # Separate threshold/cooldown for runner alerts (screener_core.
+    # format_runner_alert) - independent of the dip alert above since
+    # they're unrelated questions (volume/momentum breakout vs.
+    # drawdown-and-bounce) and a token can legitimately trip one, both,
+    # or neither in the same cycle.
+    "alert_runner_score_threshold": 75,
+    "runner_alerts_enabled": True,
     "known_universe_retention_days": 14,
 
     # Bundling/insider-cluster check (RugCheck, Solana only) - informational
@@ -442,7 +453,7 @@ def run_cycle():
         if chain_id in evm_feeds and meta["pair_address"]:
             evm_watch_addresses_this_cycle.setdefault(chain_id, {})[meta["pair_address"].lower()] = key
 
-        status = core.evaluate_token(history, meta, cfg_snapshot, now, all_time_high_price)
+        status = core.evaluate_token(history, meta, cfg_snapshot, now, all_time_high_price, bundling)
         status["platform"] = best.get("dexId", "")
         status["bundling"] = bundling
         # Flattened copy for the UI's sortable column - bundling itself is
@@ -462,12 +473,26 @@ def run_cycle():
             if should_alert:
                 push_alert(key, status["label"], core.format_alert(key, status))
 
+        if cfg_snapshot.get("runner_alerts_enabled", True) and status["runner_score"] >= cfg_snapshot.get("alert_runner_score_threshold", 75):
+            runner_alert_key = f"{key}::runner"
+            with lock:
+                last_alert_ts = state["alerted"].get(runner_alert_key, 0)
+                should_alert_runner = now - last_alert_ts > 6 * 3600
+                if should_alert_runner:
+                    state["alerted"][runner_alert_key] = now
+
+            if should_alert_runner:
+                push_alert(key, status["label"], core.format_runner_alert(key, status))
+
     with realtime_lock:
         evm_watched_addresses.clear()
         evm_watched_addresses.update(evm_watch_addresses_this_cycle)
 
     funnel["passed_eligibility"] = eligible_count
     funnel["scored"] = len(new_status)
+    funnel["runner_threshold_met"] = sum(
+        1 for s in new_status.values() if s["runner_score"] >= cfg_snapshot.get("alert_runner_score_threshold", 75)
+    )
     funnel["alert_threshold_met"] = sum(
         1 for s in new_status.values() if s["score"] >= cfg_snapshot.get("alert_score_threshold", 70)
     )

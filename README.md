@@ -1,6 +1,6 @@
-# Dip Screener
+# Dip & Runner Screener
 
-A local web dashboard that watches [DexScreener](https://dexscreener.com) for tokens dipping hard *right now* — built to surface a flash dip as it's happening so you can buy into it, not to wait for a bounce to confirm it first. Everything runs on your own machine: a Flask server, a background polling thread, and a local config/state file. Nothing leaves your laptop except requests to DexScreener's public API, requests to your own [QuickNode](https://quicknode.com) endpoint if you've configured one (see "Real-time layer" below), and, if configured, a Telegram alert.
+A local web dashboard that watches [DexScreener](https://dexscreener.com) for two opposite kinds of opportunity: tokens dipping hard *right now* (buy the pullback before it bounces) and tokens already **running** on huge volume *right now* (catch the breakout while trying to filter out the obvious pump-and-dumps). Same underlying data, same poll cycle, two scores computed for every token every time — the "🔻 Dip" / "🚀 Runner" tabs above the token table just switch which one drives the Score column, sort, and Match badge. Everything runs on your own machine: a Flask server, a background polling thread, and a local config/state file. Nothing leaves your laptop except requests to DexScreener's public API, requests to your own [QuickNode](https://quicknode.com) endpoint if you've configured one (see "Real-time layer" below), and, if configured, a Telegram alert.
 
 ## Quick start
 
@@ -18,16 +18,28 @@ Every poll cycle (90 seconds by default):
 1. **Discovery** — pulls candidates from DexScreener's latest boosts, top boosts, latest token profiles, and a rotating set of search queries (not scoped to any one chain or launchpad — whatever DexScreener tracks, including Solana/pump.fun and EVM chains like Ethereum and "robinhood"), then merges in your watchlist and every token discovered on any earlier cycle (carried forward for up to 14 days so a find doesn't vanish just because it drops off a feed).
 2. **Market data** — fetches price/volume/liquidity for the whole pool in batched requests (up to 30 tokens per call).
 3. **Eligibility** — a deliberately loose floor (minimum liquidity, 24h volume, market cap) filters out obvious dust, not real candidates — *except* the 5-minute volume floor and live-buy-activity check, which are strict on purpose: a token can coast on a big 24h volume number for hours after trading has actually died, and that's exactly the "dead coin" case this floor exists to catch.
-4. **Scoring** — every eligible token gets a 0-100 score instead of a hard pass/fail, weighted toward catching a dip as it happens rather than after it's already bounced:
-   - **Short-term dip quality (20%)** — the sharpest pullback across the 15m/30m/1h windows, centered on a ~40% flash-dip sweet spot. This is the main "catch it right now" signal.
-   - **Drawdown quality (25%)** — how far below its tracked all-time high, with a 20-70% sweet spot.
-   - Volume retention (10%), liquidity (15%), transaction activity (10%), token age (5%).
-   - **Narrative/legitimacy presence (10%)** — has a website and/or Twitter/Telegram/Discord linked. This is a cheap proxy for "real project with a community" built from data already fetched every cycle, **not** a measure of actual hype or virality (that would need a paid social-listening API this tool doesn't have) — a genuinely viral meme with no filled-in bio, or an early real project that hasn't set one up yet, can both slip through it.
-   - **Buy/sell momentum (5%, deliberately small)** — a token that's actively dipping is naturally sell-heavy; that's what a dip *is*. This isn't allowed to drag the score down much just because recovery buying hasn't shown up yet.
+4. **Scoring** — every eligible token gets two 0-100 scores instead of a hard pass/fail, one per screening direction (see "Dip vs. Runner scoring" below for the full breakdown of each).
 
 Each token also gets a full **15m / 30m / 1h / 6h / 12h / 24h** drawdown-and-bounce breakdown (visible on hover over the "Recent dip" column), instead of a single all-time high-to-low number.
 
-Tokens scoring at or above the alert threshold trigger a Telegram message (if configured) and appear in the Alerts feed.
+A token scoring at or above the Dip alert threshold *or* the Runner alert threshold triggers its own Telegram message (if configured) and appears in the Alerts feed - the two are independent, so a token can trip one, both, or neither in the same cycle.
+
+## Dip vs. Runner scoring
+
+**Dip score** — weighted toward catching a dip as it happens rather than after it's already bounced:
+- **Short-term dip quality (20%)** — the sharpest pullback across the 15m/30m/1h windows, centered on a ~40% flash-dip sweet spot. This is the main "catch it right now" signal.
+- **Drawdown quality (25%)** — how far below its tracked all-time high, with a 20-70% sweet spot.
+- Volume retention (10%), liquidity (15%), transaction activity (10%), token age (5%).
+- **Narrative/legitimacy presence (10%)** — has a website and/or Twitter/Telegram/Discord linked. This is a cheap proxy for "real project with a community" built from data already fetched every cycle, **not** a measure of actual hype or virality (that would need a paid social-listening API this tool doesn't have) — a genuinely viral meme with no filled-in bio, or an early real project that hasn't set one up yet, can both slip through it.
+- **Buy/sell momentum (5%, deliberately small)** — a token that's actively dipping is naturally sell-heavy; that's what a dip *is*. This isn't allowed to drag the score down much just because recovery buying hasn't shown up yet.
+- Bundling/rug-risk (see below) is **purely informational** for this score — it's shown on the row, but never changes the number.
+
+**Runner score** — the opposite question (a coin already moving hard on huge volume, not one that's pulled back), so it needs its own weights rather than just inverting the dip score:
+- **Volume surge (30%)** — blends how many times busier than its own recent average a token is trading (`volume_surge_ratio`/"Vol surge" column) with a sharper real-time-recency signal (is the last 5 minutes running hotter than today's average pace, from 5m volume alone, no historical data needed).
+- **Price momentum (25%)** — rewards a real upward move in the 1h/6h windows, sweet-spot shaped like the dip score's drawdown check but mirrored for gains and fading much more gently past the peak, since a rally can run hundreds of percent in a way a drawdown mechanically can't.
+- **Buy/sell dominance (15%)** — the opposite philosophy from the dip score: sustained buy pressure is part of a real breakout, so it's rewarded here instead of deliberately discounted.
+- Liquidity (10%), narrative/legitimacy presence (10%, same signal as the dip score).
+- **Rug-risk penalty (15%)** — the "avoid obvious scams" half of the brief. A pump-and-dump is disproportionately likely to look exactly like a huge-volume, huge-green-candle runner, so unlike the dip score, bundling/GoPlus severity here directly marks the score down, and a **Severe or Rugged** bundling result caps the runner score at 35 outright regardless of how strong the volume/momentum signal is. This is still a heuristic, not a guarantee — see "Bundling / risk check" below for what the underlying checks can and can't see, and note that bundling data itself is often missing for a *brand-new* runner that hasn't been checked yet (shown as neutral, not "clean").
 
 ## Bundling / risk check
 
@@ -82,7 +94,8 @@ Settings live in `config.json` (copy `config.example.json` to get started — `c
 |---|---|
 | `auto_discover` | Turn automatic token discovery on/off |
 | `poll_interval_seconds` | How often to poll (default 90s) |
-| `alert_score_threshold` | Minimum score to trigger an alert |
+| `alert_score_threshold` | Minimum Dip score to trigger an alert |
+| `alert_runner_score_threshold` / `runner_alerts_enabled` | Minimum Runner score to trigger an alert, and a toggle for the whole thing (both also editable from Settings in the UI) |
 | `eligibility_min_*` / `eligibility_max_*` | Loose floor/ceiling applied before scoring |
 | `eligibility_min_volume_5m_usd` | Minimum 5-minute dollar volume to be scored at all (default $5,000) — the main dead-coin filter, paired with a live-buy-activity check |
 | `known_universe_retention_days` | How long a discovered token stays tracked after it last appears anywhere |

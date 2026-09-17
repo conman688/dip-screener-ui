@@ -144,6 +144,14 @@ body {
   align-items: start;
 }
 
+/* A grid item's default min-width is auto, meaning it won't shrink below
+   its content's own intrinsic width - with enough table columns, that
+   let the whole page grow wider than the viewport instead of the table's
+   own overflow-x:auto ever kicking in, since the 1fr track just grew to
+   fit it. min-width: 0 here is what actually makes .table-scroll below
+   the one that scrolls. */
+.main-panel { min-width: 0; }
+
 @media (max-width: 920px) {
   .layout { grid-template-columns: 1fr; }
 }
@@ -180,6 +188,33 @@ body {
   color: var(--text-faint);
   font-size: 11.5px;
   font-family: var(--font-mono);
+}
+
+.mode-toggle {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+}
+
+.mode-btn {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.mode-btn:hover { color: var(--text-dim); }
+.mode-btn.active {
+  background: var(--surface-raised);
+  color: var(--text);
 }
 
 /* ---------- Filter bar ---------- */

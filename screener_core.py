@@ -1,5 +1,5 @@
 """
-Core polling / evaluation logic for the Dip Screener.
+Core polling / evaluation logic for the Dip & Runner Screener.
 No Flask or UI code lives here — app.py wraps this in a background
 thread and exposes it over HTTP.
 
@@ -539,21 +539,33 @@ def passes_eligibility(meta, cfg):
     return True, None
 
 
-def evaluate_token(history, meta, cfg, now, all_time_high_price=None):
+def evaluate_token(history, meta, cfg, now, all_time_high_price=None, bundling=None):
     """
-    Scores a token 0-100 as a dip-recovery candidate instead of gating it
-    through a chain of hard thresholds. Always returns a full breakdown, even
-    for a low-scoring token, so the UI can show WHY something scored the way
-    it did instead of just a pass/fail badge.
+    Scores a token two ways, since "worth watching" means opposite things
+    depending on what you're looking for:
 
-    Drawdown is computed from the highest price we have ever seen for this
-    token (all_time_high_price, tracked persistently in state.json and never
-    reset - see app.py), falling back to the rolling high within our own
-    retained history window if we don't have a longer-lived high yet, and
-    further falling back to DexScreener's own 24h change as a same-cycle
-    proxy for a token we've just started tracking. This directly targets the
-    "+35% on 24h change but actually 45% below its own recent peak" case a
-    naive 24h-change filter misses entirely.
+    - `score`: 0-100 as a dip-recovery candidate (unchanged from before -
+      see the drawdown/short-term-dip logic below).
+    - `runner_score`: 0-100 as a volume/momentum breakout candidate - the
+      opposite screening direction, for a coin that's already moving hard
+      right now rather than one that's pulled back. See the "Runner
+      scoring" block below for why this needs its own weights rather than
+      just inverting the dip score.
+
+    Both are always returned, even when low, so the UI can show WHY
+    something scored the way it did instead of just a pass/fail badge -
+    and so a single poll cycle can screen for either purpose without
+    re-fetching or re-computing anything.
+
+    Drawdown (for `score`) is computed from the highest price we have ever
+    seen for this token (all_time_high_price, tracked persistently in
+    state.json and never reset - see app.py), falling back to the rolling
+    high within our own retained history window if we don't have a
+    longer-lived high yet, and further falling back to DexScreener's own
+    24h change as a same-cycle proxy for a token we've just started
+    tracking. This directly targets the "+35% on 24h change but actually
+    45% below its own recent peak" case a naive 24h-change filter misses
+    entirely.
     """
     age_hours = (now - meta.get("pair_created_at", now)) / 3600
     prices = [p["price"] for p in history] or [meta.get("current_price", 0)]
@@ -719,6 +731,81 @@ def evaluate_token(history, meta, cfg, now, all_time_high_price=None):
         age_score * 0.05
     )
 
+    # ---- Runner scoring: "huge volume, running hard right now" is a
+    # different question from "dipped and might bounce," not the dip
+    # score's inverse - a coin can be down 60% from its high (a great dip
+    # score) while trading no more than usual, or up 20% on completely
+    # unremarkable volume, neither of which is a runner.
+    #
+    # Volume surge (30%): two ratios, both computable from data already
+    # fetched (no extra API calls). `hist_ratio` (reused from volume_score
+    # above) catches a token trading well above its own recent average;
+    # `recency_ratio` catches the sharper "the last 5 minutes are running
+    # hotter than this token's own daily pace" signal, using volume_5m_usd
+    # directly rather than waiting for a hot day to show up in the
+    # 24h number. Log-scaled like liquidity/activity above so a 20x
+    # average day doesn't score barely higher than a 5x one.
+    volume_5m = meta.get("volume_5m_usd", 0)
+    recency_ratio = (volume_5m * 288 / volume) if volume > 0 else (1 if volume_5m > 0 else 0)
+    volume_surge_score = clamp(
+        _log_scale(volume_ratio, ceiling=15) * 60 + _log_scale(recency_ratio, ceiling=10) * 40,
+        0, 100,
+    )
+
+    # Price momentum (25%): reward an upward move happening now (1h/6h,
+    # not 24h-stale), sweet-spot shaped like drawdown/short-term-dip above
+    # but mirrored for gains and fading much more gently past the peak -
+    # a runner can keep running for hundreds of percent in a way a dip
+    # mechanically can't (a drawdown is capped at 100%; a rally isn't).
+    momentum_pct = max(meta.get("price_change_h1_pct") or 0, meta.get("price_change_h6_pct") or 0)
+    if momentum_pct < 10:
+        runner_momentum_score = max(0, momentum_pct) / 10 * 30
+    elif momentum_pct <= 300:
+        runner_momentum_score = 30 + (momentum_pct - 10) / 290 * 70
+    else:
+        runner_momentum_score = max(0, 100 - (momentum_pct - 300) * 0.1)
+    runner_momentum_score = clamp(runner_momentum_score, 0, 100)
+
+    # Buy/sell dominance (15%) - unlike the dip score, which deliberately
+    # keeps this small because a dip is naturally sell-heavy, a runner
+    # SHOULD be buy-heavy if the move is real demand rather than a thin
+    # pool getting knocked around; sustained buy pressure is part of the
+    # signal here, not something to discount.
+    runner_buy_dominance_score = clamp((buy_ratio - 0.4) / 0.4 * 100, 0, 100)
+
+    # Rug-risk penalty (15%) - the "avoid obvious scams" half of the
+    # brief. A pump-and-dump is disproportionately likely to show up as
+    # exactly this pattern (huge volume, huge green candle), so unlike the
+    # dip score - which deliberately leaves bundling purely informational
+    # and never lets it affect ranking - the runner score explicitly marks
+    # high bundling/GoPlus severity down. `severity` is 0-100, high =
+    # worse, from compute_bundling_severity()/compute_evm_risk_severity();
+    # unavailable data (no check yet, or an unsupported chain) stays
+    # neutral rather than being punished for something this code simply
+    # doesn't know.
+    if bundling is None:
+        runner_risk_score = 50
+    else:
+        runner_risk_score = clamp(100 - bundling.get("severity", 0), 0, 100)
+
+    runner_score = round(
+        volume_surge_score * 0.30 +
+        runner_momentum_score * 0.25 +
+        runner_buy_dominance_score * 0.15 +
+        liquidity_score * 0.10 +
+        narrative_score * 0.10 +
+        runner_risk_score * 0.15
+    )
+    # A blended 15% weight still lets a big enough volume/momentum spike
+    # outweigh a bad bundling result - fine for "Moderate," not fine for
+    # "this is confirmed rugged or nearly all insider-held," which
+    # deserves outright suppression rather than a partial deduction if
+    # "avoid obvious scams" is going to mean anything in practice. Only
+    # the two most severe labels are capped; "High" still just takes the
+    # proportional hit above.
+    if bundling and bundling.get("label") in ("Severe", "Rugged"):
+        runner_score = min(runner_score, 35)
+
     return {
         "label": meta.get("label", "?"),
         "url": meta.get("url", ""),
@@ -756,6 +843,20 @@ def evaluate_token(history, meta, cfg, now, all_time_high_price=None):
             "narrative_presence": round(narrative_score),
             "age": round(age_score),
         },
+        # Runner ("huge volume, running right now") screening - see the
+        # block above evaluate_token()'s return for why this needs its
+        # own weights rather than reusing the dip score's.
+        "runner_score": runner_score,
+        "runner_score_breakdown": {
+            "volume_surge": round(volume_surge_score),
+            "price_momentum": round(runner_momentum_score),
+            "buy_dominance": round(runner_buy_dominance_score),
+            "liquidity": round(liquidity_score),
+            "narrative_presence": round(narrative_score),
+            "risk_penalty": round(runner_risk_score),
+        },
+        "volume_surge_ratio": round(volume_ratio, 1),
+        "volume_recency_ratio": round(recency_ratio, 1),
         "points_tracked": len(history),
         "last_updated": now,
     }
@@ -796,6 +897,37 @@ def format_alert(key, status):
         f"Sharpest short-term pullback (15m/30m/1h): -{status['short_term_dip_pct']}%{short_term_note}\n"
         f"Down {status['max_drawdown_pct']}% from its recent high{proxy_note} "
         f"(+{status['bounce_1h_pct']}% off the 1h low).\n"
+        f"{bundling_line}"
+        f"Price: ${status['current_price']:.8f}  |  Age: {status['age_hours']}h\n"
+        f"Liquidity: ${status['liquidity_usd']:,.0f}  |  5m Vol: ${status['volume_5m_usd']:,.0f}  |  24h Vol: ${status['volume24h_usd']:,.0f}\n"
+        f"{status['url']}"
+    )
+
+
+def format_runner_alert(key, status):
+    """Same shape as format_alert() above, for the opposite screening
+    direction - a volume/momentum breakout instead of a dip. See
+    evaluate_token()'s runner-scoring block for why this needs its own
+    message rather than reusing the dip one (different underlying
+    signals: volume surge + upward momentum + buy pressure, not
+    drawdown)."""
+    bundling = status.get("bundling")
+    bundling_line = ""
+    if bundling and bundling.get("source") == "goplus":
+        flags_note = f" — {', '.join(bundling['flags'])}" if bundling.get("flags") else ""
+        bundling_line = (
+            f"Risk (GoPlus): {bundling['label']} — {bundling['unlocked_top10_pct']}% held by "
+            f"unlocked top-10 wallets{flags_note}\n"
+        )
+    elif bundling:
+        bundling_line = (
+            f"Bundling: {bundling['label']} — {bundling['insider_pct']}% of holders "
+            f"({bundling['insider_wallets']}/{bundling['total_holders']}) traced to a common funder\n"
+        )
+    return (
+        f"\U0001F680 *Runner candidate*: {status['label']} — runner score {status['runner_score']}/100\n"
+        f"Volume {status['volume_surge_ratio']}x its own recent average "
+        f"(last 5min running {status['volume_recency_ratio']}x today's average pace).\n"
         f"{bundling_line}"
         f"Price: ${status['current_price']:.8f}  |  Age: {status['age_hours']}h\n"
         f"Liquidity: ${status['liquidity_usd']:,.0f}  |  5m Vol: ${status['volume_5m_usd']:,.0f}  |  24h Vol: ${status['volume24h_usd']:,.0f}\n"
