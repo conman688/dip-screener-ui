@@ -14,6 +14,7 @@ once. See evaluate_token() for the scoring model.
 
 import bisect
 import json
+import sys
 import time
 import urllib.request
 import urllib.error
@@ -332,9 +333,28 @@ def compute_evm_risk_severity(entry):
     }
 
 
+def _safe_print(text):
+    # Alert text can contain emoji (score/LP-drain/mempool markers). A
+    # console whose stdout isn't UTF-8 (the Windows default codepage,
+    # cp1252, in particular - confirmed live: this raised
+    # UnicodeEncodeError and silently killed message processing inside
+    # the QuickNode WebSocket thread, since that exception surfaced as a
+    # "ws error" rather than a visible crash) can't encode those
+    # characters directly. Fall back to replacing whatever it can't
+    # represent rather than losing the whole line - this print is a
+    # console fallback for when Telegram isn't configured, not the alert
+    # itself, so a few '?' in place of an emoji is a fine trade for never
+    # raising here.
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = sys.stdout.encoding or "utf-8"
+        print(text.encode(encoding, errors="replace").decode(encoding))
+
+
 def send_telegram(bot_token: str, chat_id: str, message: str):
     if not bot_token or not chat_id:
-        print(f"[alert - telegram not configured]\n{message}\n")
+        _safe_print(f"[alert - telegram not configured]\n{message}\n")
         return False
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = json.dumps({

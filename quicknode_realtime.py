@@ -44,6 +44,7 @@ Four independent pieces, each gated by its own config flag:
 """
 
 import json
+import sys
 import threading
 import time
 import urllib.error
@@ -55,16 +56,45 @@ except ImportError:
     websocket = None
 
 
+def _log(msg):
+    # Default logger for both feed classes below. Plain print() on a
+    # background thread can sit in Python's stdout buffer indefinitely
+    # when stdout isn't a TTY (e.g. captured by a process manager) - flush
+    # explicitly so connection/error lines actually show up when they
+    # happen, not whenever the buffer next happens to fill.
+    #
+    # Also guards against a confirmed-live failure mode: a non-UTF8
+    # console (Windows' cp1252 default) raising UnicodeEncodeError on an
+    # emoji in a logged message. That exception, raised from inside a
+    # websocket-client message callback, doesn't crash visibly - it gets
+    # reported back as a generic "ws error", which looked like a
+    # connection problem but was actually this.
+    try:
+        print(msg, flush=True)
+    except UnicodeEncodeError:
+        encoding = sys.stdout.encoding or "utf-8"
+        print(msg.encode(encoding, errors="replace").decode(encoding), flush=True)
+
+
 # ---------------------------------------------------------------------------
 # Shared JSON-RPC helpers (HTTP)
 # ---------------------------------------------------------------------------
 
-def _rpc_call(http_url, method, params, timeout=10):
+_warned_methods = set()  # method names already logged as failing once this process - see _rpc_call's log_errors
+
+
+def _rpc_call(http_url, method, params, timeout=10, log_errors=False):
     """One JSON-RPC 2.0 request over HTTP. Returns the `result` value, or
     None on any transport/HTTP/RPC error - callers treat None as "this
     lookup isn't available right now," never as a crash, since every
     feature in this module must degrade to a no-op rather than take down
-    the poll cycle."""
+    the poll cycle.
+
+    log_errors=True prints the JSON-RPC error once per method per process
+    (not every call - a permanently-unavailable method like a disabled
+    DAS add-on would otherwise get retried, and silently logged, every
+    single cycle forever). Left off by default for the high-volume WS
+    path, where logging every miss would just be noise."""
     if not http_url:
         return None
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
@@ -74,9 +104,17 @@ def _rpc_call(http_url, method, params, timeout=10):
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError):
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as e:
+        if log_errors and method not in _warned_methods:
+            _warned_methods.add(method)
+            _log(f"[quicknode] {method} failed: {e}")
         return None
     if "error" in data:
+        if log_errors and method not in _warned_methods:
+            _warned_methods.add(method)
+            err = data["error"]
+            hint = " - this endpoint likely doesn't have this add-on enabled (check your QuickNode dashboard)" if err.get("code") == -32601 else ""
+            _log(f"[quicknode] {method} error: {err.get('message', err)}{hint}")
         return None
     return data.get("result")
 
@@ -110,7 +148,7 @@ def get_creator_reputation(solana_http_url, mint_address, timeout=10):
     that isn't a person (a program-owned address), and this function has
     no way to tell those cases apart from "n/a."
     """
-    asset = _rpc_call(solana_http_url, "getAsset", {"id": mint_address}, timeout=timeout)
+    asset = _rpc_call(solana_http_url, "getAsset", {"id": mint_address}, timeout=timeout, log_errors=True)
     if not asset:
         return None
     creators = asset.get("creators") or []
@@ -145,6 +183,11 @@ DEFAULT_LAUNCH_PROGRAM_IDS = {
     "raydium_amm_v4": "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
 }
 
+# Cheap pre-filter applied to a notification's own `logs` array (no extra
+# RPC call) before spending a getTransaction lookup on it - see the
+# comment on _handle_discover for how these were chosen/verified.
+_CREATION_LOG_MARKERS = ("Instruction: Create", "Instruction: Initialize2")
+
 
 class SolanaRealtimeFeed:
     """One persistent WebSocket connection multiplexing:
@@ -157,7 +200,7 @@ class SolanaRealtimeFeed:
     module has no direct dependency on Flask or the global app state.
     """
 
-    def __init__(self, wss_url, http_url, on_new_mint, on_lp_drain, lp_drain_threshold_pct=40, logger=print):
+    def __init__(self, wss_url, http_url, on_new_mint, on_lp_drain, lp_drain_threshold_pct=40, logger=_log):
         self.wss_url = wss_url
         self.http_url = http_url
         self.on_new_mint = on_new_mint
@@ -214,6 +257,7 @@ class SolanaRealtimeFeed:
             return
         backoff = 2
         while not self._stop:
+            connect_started = time.time()
             try:
                 self._ws = websocket.WebSocketApp(
                     self.wss_url,
@@ -222,13 +266,24 @@ class SolanaRealtimeFeed:
                     on_error=lambda ws, e: self.logger(f"[quicknode] ws error: {e}"),
                     on_close=lambda ws, code, msg: self._on_close(),
                 )
-                backoff = 2
                 self._ws.run_forever(ping_interval=30, ping_timeout=10)
             except Exception as e:
                 self.logger(f"[quicknode] ws connection failed: {e}")
             self._connected = False
             if self._stop:
                 return
+            # Only treat this as "recovered" (reset backoff to the
+            # minimum) once the connection has actually stayed up a
+            # while - live-caught bug: resetting backoff before every
+            # attempt regardless of how it went made exponential backoff
+            # a no-op, since a connect-then-immediate-close loop (seen
+            # live: QuickNode closing with code 1001 "upstream went
+            # away" seconds after connecting, likely a rate/quota limit
+            # on this endpoint given how high-volume the pump.fun
+            # subscription is) never actually slept longer than the
+            # 2-second floor no matter how many times it repeated.
+            if time.time() - connect_started > 30:
+                backoff = 2
             time.sleep(backoff)
             backoff = min(backoff * 2, 60)
 
@@ -283,7 +338,7 @@ class SolanaRealtimeFeed:
             return
 
         if purpose == "discover":
-            self._handle_discover(signature)
+            self._handle_discover(signature, value.get("logs") or [])
         elif isinstance(purpose, tuple) and purpose[0] == "watch_pool":
             self._handle_lp_check(purpose[1], signature)
 
@@ -293,14 +348,30 @@ class SolanaRealtimeFeed:
             [signature, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0, "commitment": "confirmed"}],
         )
 
-    def _handle_discover(self, signature):
-        # Deliberately simple heuristic: any mint whose token balance
-        # appears post-transaction but didn't exist pre-transaction is
-        # treated as "possibly just created." This is protocol-agnostic
+    def _handle_discover(self, signature, logs):
+        # mentions=[program_id] on pump.fun alone runs to several hundred
+        # notifications a second in practice (mostly Buy/Sell/Swap/
+        # TransferChecked - live-measured, not a guess) - calling
+        # getTransaction on every single one would blow through request
+        # quota and fall behind the feed. The logs array is already in
+        # the notification at no extra RPC cost, so filter on it first:
+        # "Instruction: CreateV2" is confirmed live (captured a real
+        # transaction: CreateV2 -> InitializeMint2 -> TokenMetadata
+        # Initialize -> MintTo -> an immediate first Buy - unmistakably a
+        # new pump.fun token launch). "Initialize2" (Raydium AMM v4 pool
+        # init) is the standard documented instruction name but wasn't
+        # observed live this session, so treat it as best-effort - if
+        # it's wrong, Raydium-path discovery just quietly finds nothing,
+        # same fail-safe as everything else in this module.
+        if not any(marker in line for line in logs for marker in _CREATION_LOG_MARKERS):
+            return
+
+        # Deliberately simple heuristic from here: any mint whose token
+        # balance appears post-transaction but didn't exist pre-transaction
+        # is treated as "possibly just created" - protocol-agnostic
         # (works the same for pump.fun and Raydium without parsing either
-        # program's log format, which is fragile and changes without
-        # notice) at the cost of being noisy - a false hit is just a
-        # candidate that fails eligibility or scores low next cycle, the
+        # program's full instruction layout) at the cost of some noise; a
+        # false hit just fails eligibility or scores low next cycle, the
         # same tolerance DexScreener's own discovery feeds already need.
         tx = self._get_transaction(signature)
         if not tx:
@@ -317,21 +388,65 @@ class SolanaRealtimeFeed:
         if not tx:
             return
         meta = tx.get("meta") or {}
-        pre = {b.get("accountIndex"): b for b in (meta.get("preTokenBalances") or [])}
-        post = {b.get("accountIndex"): b for b in (meta.get("postTokenBalances") or [])}
-        for idx, pre_bal in pre.items():
-            post_bal = post.get(idx)
+
+        # A pump.fun bonding-curve pool "graduating" to Raydium moves
+        # ~all of its reserves out in a single transaction - by design,
+        # not a rug, and to this balance-delta check the two are
+        # indistinguishable on the numbers alone. The graduation transfer
+        # is itself invoked by the pump.fun program though, so a real
+        # drain by whoever holds the LP (not this pool's own program
+        # logic) is the case that does NOT show the pump.fun program id
+        # among the transaction's own log lines - suppress the alert when
+        # it does, since that's the one signal available here that
+        # distinguishes "this pool's own contract moved its funds
+        # somewhere" from "someone else pulled them."
+        log_lines = meta.get("logMessages") or []
+        if any(pid in line for line in log_lines for pid in DEFAULT_LAUNCH_PROGRAM_IDS.values()):
+            return
+
+        # logsSubscribe(mentions=[pool]) fires on ANY transaction that
+        # references the pool anywhere, including as one leg of a much
+        # larger multi-hop aggregator route through several unrelated
+        # pools (confirmed live: a DFlow Aggregator swap that routed
+        # USDC -> WSOL -> this token got flagged as a 74% "drain" because
+        # an unrelated WSOL routing account in the SAME transaction
+        # emptied out, which is normal multi-hop plumbing, not this
+        # pool's own reserves moving). Restricting to preTokenBalances/
+        # postTokenBalances entries whose mint is this pool's own token,
+        # and picking the single largest matching pre-balance as the
+        # stand-in for "the pool's actual reserve account" (this tool's
+        # eligibility floor means a real pool reserve should dwarf any
+        # one trader's or router's momentary holding of the same token),
+        # fixes that specific false positive. It's still a heuristic, not
+        # a certainty - an unusually large real trade against an
+        # already-thin pool could still cross the threshold, so treat a
+        # fired alert as "go look at the transaction," not "confirmed
+        # rug" on its own.
+        _, token_mint = key.split(":", 1)
+        pre = [b for b in (meta.get("preTokenBalances") or []) if b.get("mint") == token_mint]
+        post = {b.get("accountIndex"): b for b in (meta.get("postTokenBalances") or []) if b.get("mint") == token_mint}
+        if not pre:
+            return
+
+        def _pre_amount(b):
             try:
-                pre_amt = float(pre_bal["uiTokenAmount"]["uiAmountString"])
-                post_amt = float(post_bal["uiTokenAmount"]["uiAmountString"]) if post_bal else 0.0
+                return float(b["uiTokenAmount"]["uiAmountString"])
             except (KeyError, TypeError, ValueError):
-                continue
-            if pre_amt <= 0:
-                continue
-            drop_pct = (pre_amt - post_amt) / pre_amt * 100
-            if drop_pct >= self.lp_drain_threshold_pct:
-                self.on_lp_drain(key, signature, drop_pct)
-                return
+                return 0.0
+
+        reserve_bal = max(pre, key=_pre_amount)
+        pre_amt = _pre_amount(reserve_bal)
+        if pre_amt <= 0:
+            return
+        post_bal = post.get(reserve_bal.get("accountIndex"))
+        try:
+            post_amt = float(post_bal["uiTokenAmount"]["uiAmountString"]) if post_bal else 0.0
+        except (KeyError, TypeError, ValueError):
+            post_amt = 0.0
+
+        drop_pct = (pre_amt - post_amt) / pre_amt * 100
+        if drop_pct >= self.lp_drain_threshold_pct:
+            self.on_lp_drain(key, signature, drop_pct)
 
 
 # ---------------------------------------------------------------------------
@@ -365,7 +480,7 @@ class EvmMempoolFeed:
     """
 
     def __init__(self, chain_id, wss_url, http_url, get_watched_addresses, on_pending_hit,
-                 max_lookups_per_sec=20, logger=print):
+                 max_lookups_per_sec=20, logger=_log):
         self.chain_id = chain_id
         self.wss_url = wss_url
         self.http_url = http_url
@@ -399,6 +514,7 @@ class EvmMempoolFeed:
             return
         backoff = 2
         while not self._stop:
+            connect_started = time.time()
             try:
                 self._ws = websocket.WebSocketApp(
                     self.wss_url,
@@ -407,13 +523,17 @@ class EvmMempoolFeed:
                     on_error=lambda ws, e: self.logger(f"[quicknode:{self.chain_id}] mempool ws error: {e}"),
                     on_close=lambda ws, code, msg: setattr(self, "_connected", False),
                 )
-                backoff = 2
                 self._ws.run_forever(ping_interval=30, ping_timeout=10)
             except Exception as e:
                 self.logger(f"[quicknode:{self.chain_id}] mempool connection failed: {e}")
             self._connected = False
             if self._stop:
                 return
+            # See SolanaRealtimeFeed._run_forever's comment - same fix,
+            # same bug (backoff reset unconditionally before every
+            # attempt made it a no-op).
+            if time.time() - connect_started > 30:
+                backoff = 2
             time.sleep(backoff)
             backoff = min(backoff * 2, 60)
 
