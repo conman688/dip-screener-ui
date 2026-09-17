@@ -177,6 +177,28 @@ function fmtMoneySigned(n) {
   return (n >= 0 ? '+' : '-') + fmtMoney(Math.abs(n));
 }
 
+// fomo.family's public /prices/<slug> pages are looked up by ticker
+// symbol, not contract address - there's no public per-address route.
+// This mirrors their own slug logic (a few majors get a fixed slug,
+// everything else is just the lowercased symbol) so the link at least
+// matches what fomo.family would generate itself, but it's fundamentally
+// a best-effort secondary link: a common ticker (ELON, PEPE, ...) can
+// resolve to a different, more established coin sharing that symbol, and
+// an obscure token outside fomo's own curated list may show no data at
+// all. DexScreener's chain+address link stays primary because it's
+// unambiguous and covers every token this tool tracks.
+const FOMO_SYMBOL_SLUGS = {
+  BTC: 'bitcoin-btc', WBTC: 'bitcoin-btc', cbBTC: 'bitcoin-btc',
+  SOL: 'solana-sol', WSOL: 'solana-sol',
+  ETH: 'ethereum-eth', WETH: 'ethereum-eth',
+};
+function fomoChartUrl(symbol) {
+  if (!symbol) return null;
+  const mapped = FOMO_SYMBOL_SLUGS[symbol] || symbol;
+  const slug = mapped.replace(/[^0-9a-zA-Z-]/g, '').toLowerCase();
+  return slug ? `https://fomo.family/prices/${slug}` : null;
+}
+
 function fmtPctSigned(n) {
   return (n >= 0 ? '+' : '') + n.toFixed(1) + '%';
 }
@@ -350,7 +372,10 @@ function renderTable() {
         <td>
           <div class="token-label">${escapeHtml(t.label)}</div>
           <span class="token-chain">${escapeHtml(t.chain_id)}${t.platform ? ' · ' + escapeHtml(t.platform) : ''}</span>
-          ${t.url ? `<a class="token-link" href="${escapeHtml(t.url)}" target="_blank" rel="noopener">view chart</a>` : ''}
+          <div class="token-links">
+            ${t.url ? `<a class="token-link" href="${escapeHtml(t.url)}" target="_blank" rel="noopener">view chart</a>` : ''}
+            ${fomoChartUrl(t.label) ? `<a class="token-link token-link-secondary" href="${escapeHtml(fomoChartUrl(t.label))}" target="_blank" rel="noopener" title="fomo.family looks tokens up by ticker symbol, not contract address. A common ticker may resolve to a different, more established coin with the same symbol - and an obscure token outside fomo's own listings may show no data. DexScreener (left) is the reliable link for this exact token.">fomo ↗</a>` : ''}
+          </div>
         </td>
         <td class="num">
           <span class="score-pill ${scoreClass}" title="${escapeHtml(breakdownText)}">${t.score}</span>

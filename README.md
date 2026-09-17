@@ -27,6 +27,8 @@ Every poll cycle (90 seconds by default):
 
 Each token also gets a full **15m / 30m / 1h / 6h / 12h / 24h** drawdown-and-bounce breakdown (visible on hover over the "Recent dip" column), instead of a single all-time high-to-low number.
 
+Each row has two chart links: **view chart** (DexScreener, chain+address based - always the right token, covers everything tracked here) and a dimmer secondary **fomo ↗** (fomo.family). fomo.family has no public per-address lookup, only a `/prices/<ticker-symbol>` page limited to its own curated coin list, so the fomo link is best-effort: a common ticker (e.g. "ELON") can resolve to a different, more established coin sharing that symbol rather than the specific micro-cap tracked here, and an obscure token outside fomo's list may show no data at all. Hover the link for that caveat; DexScreener is the one to trust for "is this the exact token."
+
 Tokens scoring at or above the alert threshold trigger a Telegram message (if configured) and appear in the Alerts feed.
 
 ## Bundling / risk check

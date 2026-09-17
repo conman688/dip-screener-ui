@@ -425,15 +425,23 @@ body {
   font-size: 13px;
 }
 
+.token-links {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
 .token-link {
   color: var(--text-faint);
   font-size: 10.5px;
   text-decoration: none;
-  display: block;
-  margin-top: 2px;
   font-family: var(--font-ui);
 }
 .token-link:hover { color: var(--text-dim); }
+
+.token-link-secondary { opacity: 0.6; }
+.token-link-secondary:hover { opacity: 1; }
 
 .token-chain {
   display: block;
