@@ -1,6 +1,6 @@
 # Dip Screener
 
-A local web dashboard that watches [DexScreener](https://dexscreener.com) for tokens dipping hard *right now* — built to surface a flash dip as it's happening so you can buy into it, not to wait for a bounce to confirm it first. Everything runs on your own machine: a Flask server, a background polling thread, and a local config/state file. Nothing leaves your laptop except requests to DexScreener's public API and, if configured, a Telegram alert.
+A local web dashboard that watches [DexScreener](https://dexscreener.com) for tokens dipping hard *right now* — built to surface a flash dip as it's happening so you can buy into it, not to wait for a bounce to confirm it first. Everything runs on your own machine: a Flask server, a background polling thread, and a local config/state file. Nothing leaves your laptop except requests to DexScreener's public API, requests to your own [QuickNode](https://quicknode.com) endpoint if you've configured one (see "Real-time layer" below), and, if configured, a Telegram alert.
 
 ## Quick start
 
@@ -42,6 +42,18 @@ Notes:
 - A non-Solana, non-GoPlus-supported chain shows `—` (no data), never a false "clean" result.
 - Checked once per token then cached for `bundling_recheck_hours` (default 6h) so it isn't re-queried every 90-second cycle — holder/contract structure doesn't shift that fast. A failed or rate-limited check doesn't get cached, though — it just retries next cycle.
 
+## Real-time layer (QuickNode, optional)
+
+Everything above runs on DexScreener's REST API, polled every 90 seconds — fine for scoring, but it means a brand-new token can sit unseen for a while if it hasn't yet surfaced in DexScreener's own discovery feeds. Pasting a [QuickNode](https://quicknode.com) Solana endpoint URL into Settings turns on three additional things (`quicknode_realtime.py`), all built on a plain WebSocket subscription rather than QuickNode's Streams/Webhooks product — those push to a public HTTPS URL, which a local desktop app doesn't have:
+
+1. **Near-instant pool discovery** — watches pump.fun + Raydium program activity directly and feeds new mints into the exact same eligibility/scoring pipeline every other candidate goes through, instead of waiting for DexScreener's own discovery feeds to surface the same token. The candidate-recognition heuristic is deliberately simple (any mint that appears in a matched transaction's token balances but wasn't there before) rather than parsing pump.fun/Raydium's program-specific log formats, which change without notice — a noisy false-positive candidate just fails eligibility or scores low next cycle, the same tolerance DexScreener's own discovery noise already needs.
+2. **Creator-wallet reputation** (Solana, via Metaplex DAS) — looks up a mint's recorded creator and counts how many other tokens that wallet has made, surfaced as a "serial creator" flag folded into the Bundling column once it crosses 15 other tokens. This is best-effort, not a verified fact: it only means anything because pump.fun sets a token's metadata creator to the real launching wallet (for its own creator-rewards feature) — a token minted another way may have no creator recorded at all, and this code has no way to independently confirm any of it.
+3. **Live LP-drain tripwire** — watches every transaction touching an already-tracked pool and fires an alert (Telegram + the Alerts panel) the moment one drains `quicknode_lp_tripwire_drop_pct`% (default 40%) of the pool's token balance, instead of waiting for the next bundling recheck (up to 6 hours away).
+
+A 4th piece, **EVM mempool early-warning**, is config.json-only for now (`quicknode_evm_endpoints`, one `wss://` URL per chain — supported chains: `ethereum`, `base`, `bsc`, `polygon`, `arbitrum`, `optimism`, `avalanche`; anything else this tool tracks, like the "robinhood"/"arc" chains, isn't a chain QuickNode supports and is skipped outright). It flags a pending transaction sent *directly* to a tracked pool/pair address before it confirms — genuinely useful lead time, but narrower than it sounds: most real sells on an EVM chain go through a router contract with the token address buried in calldata, which this does **not** decode, so it only catches direct-to-pool activity, not the common router-mediated swap. Also: `eth_subscribe("newPendingTransactions")` only gives you transaction hashes, and resolving each one costs a follow-up RPC call — on a busy chain like Ethereum mainnet that's a lot of request volume, so this applies a hard per-second rate cap and simply drops hashes once it's hit, rather than queueing everything. Expect this to need a paid QuickNode plan tier for sustained use.
+
+All four are independent and individually toggleable; every one of them is a no-op with nothing configured, and a feed that can't connect (bad URL, endpoint down) retries with backoff and logs the error — it never takes down the poll cycle. The "Real-time layer: ..." line under the QuickNode field in Settings shows live connection status per feed.
+
 ## Built for small, careful portfolios
 
 This isn't tuned to maximize the number of tokens shown — it's tuned to help you not gamble away a small amount of money:
@@ -74,15 +86,20 @@ Settings live in `config.json` (copy `config.example.json` to get started — `c
 | `known_universe_retention_days` | How long a discovered token stays tracked after it last appears anywhere |
 | `bundling_check_enabled` / `bundling_recheck_hours` | Toggle the RugCheck bundling check and how often it's refreshed per token (default on, 6h) |
 | `telegram_bot_token` / `telegram_chat_id` | Optional Telegram alerts |
+| `quicknode_solana_wss_url` | QuickNode Solana endpoint (also settable from Settings in the UI) — see "Real-time layer" |
+| `quicknode_realtime_discovery_enabled` / `quicknode_das_enabled` / `quicknode_lp_tripwire_enabled` | Toggle each real-time piece independently (all default on once the endpoint above is set) |
+| `quicknode_lp_tripwire_drop_pct` | % of a pool's token balance lost in one transaction that counts as a drain (default 40) |
+| `quicknode_evm_endpoints` / `quicknode_mempool_enabled` | `{"ethereum": "wss://...", ...}` — EVM mempool early-warning, config.json-only, mainstream chains only |
 
 ## Project structure
 
 ```
-app.py              Flask app, background polling loop, HTTP API
-screener_core.py     Discovery, scoring, and drawdown/window calculations
-templates/index.html Dashboard page
-static/app.js        Dashboard UI logic
-static/style.css     Dashboard styling
-config.json           Your local config (gitignored)
-state.json             Persisted price history / known universe (gitignored)
+app.py                 Flask app, background polling loop, HTTP API
+screener_core.py       Discovery, scoring, and drawdown/window calculations
+quicknode_realtime.py  Optional real-time layer (QuickNode WebSocket feeds + Metaplex DAS)
+templates/index.html   Dashboard page
+static/app.js          Dashboard UI logic
+static/style.css       Dashboard styling
+config.json             Your local config (gitignored)
+state.json               Persisted price history / known universe (gitignored)
 ```

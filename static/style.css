@@ -508,6 +508,7 @@ body {
   color: var(--text-dim);
   font-size: 11.5px;
   margin-top: 2px;
+  white-space: pre-line;
 }
 
 .alert-item .alert-time {

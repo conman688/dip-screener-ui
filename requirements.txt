@@ -2,6 +2,17 @@ Flask>=3.0
 
 # screener_core.py itself only uses the Python standard library
 # (urllib, json, time) so nothing extra is needed for the polling logic.
+#
+# quicknode_realtime.py needs one real third-party dependency: a
+# WebSocket client, for the real-time Solana/EVM feeds (QuickNode
+# Streams/Webhooks push to a public HTTPS endpoint, which a local
+# desktop app doesn't have - subscribing over a plain WebSocket is the
+# equivalent that works from a machine with no public URL). Every
+# feature built on it is a no-op with nothing configured in Settings, so
+# this is optional in the same sense Flask itself isn't: only needed if
+# you actually run app.py.
+websocket-client>=1.6
+
 # Optional, if you want a nicer HTTP client than urllib later:
 #
 # requests

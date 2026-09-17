@@ -22,6 +22,7 @@ import uuid
 from flask import Flask, jsonify, request, render_template
 
 import screener_core as core
+import quicknode_realtime as qn
 
 app = Flask(__name__)
 # Otherwise Jinja caches the compiled template in memory the first time it's
@@ -77,6 +78,17 @@ DEFAULT_CONFIG = {
     "telegram_bot_token": "",
     "telegram_chat_id": "",
     "running": True,
+
+    # QuickNode real-time layer (quicknode_realtime.py) - every field here
+    # is optional; nothing in this block does anything until you paste in
+    # your own QuickNode endpoint URL(s). See README "Real-time layer".
+    "quicknode_solana_wss_url": "",              # e.g. wss://<name>.solana-mainnet.quiknode.pro/<token>/
+    "quicknode_realtime_discovery_enabled": True,  # find new pump.fun/Raydium pools the block they're created, not on the next DexScreener discovery sweep
+    "quicknode_das_enabled": True,                 # Solana creator-wallet reputation via Metaplex DAS
+    "quicknode_lp_tripwire_enabled": True,          # alert the instant a tracked pool's balance gets drained, not on the next bundling recheck
+    "quicknode_lp_tripwire_drop_pct": 40,           # % of a pool's token balance lost in one tx that counts as a drain
+    "quicknode_evm_endpoints": {},                  # {"ethereum": "wss://...", "base": "wss://...", ...} - mainstream chains only, see EVM_MEMPOOL_SUPPORTED_CHAINS
+    "quicknode_mempool_enabled": True,
 }
 
 lock = threading.Lock()
@@ -148,9 +160,112 @@ next_alert_id = 1
 last_funnel = {}
 cycle_count = 0
 
+# ---------------- QuickNode real-time layer ----------------
+# See quicknode_realtime.py. A separate small lock (not the main `lock`)
+# guards these, since the WS feeds call into push_alert()/realtime_discovered
+# from their own background threads and must never block waiting on
+# whatever the main poll cycle happens to be doing with `lock` at that
+# moment (a long-running DexScreener batch fetch, for instance).
+realtime_lock = threading.Lock()
+realtime_discovered = []          # [(chain_id, address, label), ...] drained into `discovered` each cycle
+evm_watched_addresses = {}        # chain_id -> {pair_address.lower(): key}, refreshed every cycle
+solana_feed = None                # quicknode_realtime.SolanaRealtimeFeed, or None if not configured
+evm_feeds = {}                    # chain_id -> quicknode_realtime.EvmMempoolFeed
+
+
+def push_alert(key, label, message):
+    """Shared by the score-threshold alert path in run_cycle() and the
+    QuickNode real-time callbacks (LP tripwire, mempool early-warning) -
+    same Telegram send, same bounded in-memory feed, one place instead of
+    three copies of the same dozen lines."""
+    global next_alert_id
+    core.send_telegram(config.get("telegram_bot_token", ""), config.get("telegram_chat_id", ""), message)
+    with lock:
+        alerts_feed.insert(0, {
+            "id": next_alert_id,
+            "key": key,
+            "label": label,
+            "message": message,
+            "ts": time.time(),
+        })
+        next_alert_id += 1
+        del alerts_feed[50:]
+
+
+def _on_realtime_new_mint(mint_address):
+    key = f"solana:{mint_address}"
+    with lock:
+        already_known = key in state.get("known_universe", {})
+    if already_known:
+        return
+    with realtime_lock:
+        realtime_discovered.append(("solana", mint_address, mint_address[:8]))
+
+
+def _on_lp_drain(key, signature, drop_pct):
+    chain_id, token_address = key.split(":", 1)
+    with lock:
+        label = (live_status.get(key) or {}).get("label", token_address[:8])
+    message = (
+        f"\U0001F6A8 LP DRAIN: {label} ({chain_id}) lost {drop_pct:.0f}% of a tracked pool's "
+        f"token balance in a single transaction. https://solscan.io/tx/{signature}"
+    )
+    push_alert(key, label, message)
+
+
+def _on_evm_pending_hit(key, tx_hash, tx):
+    chain_id, token_address = key.split(":", 1)
+    with lock:
+        label = (live_status.get(key) or {}).get("label", token_address[:8])
+    message = (
+        f"⚠️ PENDING: a transaction targeting {label} ({chain_id})'s pool is in the "
+        f"mempool, not confirmed yet - tx {tx_hash}"
+    )
+    push_alert(key, label, message)
+
+
+def init_quicknode_feeds(cfg_snapshot):
+    """Called once at startup and again whenever Settings saves a new
+    QuickNode endpoint - tears down and rebuilds whichever feeds have a
+    configured URL. Every feed degrades to "just don't start" when its
+    URL is blank, so this is safe to call with an empty config too."""
+    global solana_feed, evm_feeds
+
+    if solana_feed:
+        solana_feed.stop()
+    solana_feed = None
+    solana_wss = cfg_snapshot.get("quicknode_solana_wss_url", "").strip()
+    if solana_wss:
+        solana_feed = qn.SolanaRealtimeFeed(
+            wss_url=solana_wss,
+            http_url=qn.wss_to_http(solana_wss),
+            on_new_mint=_on_realtime_new_mint,
+            on_lp_drain=_on_lp_drain,
+            lp_drain_threshold_pct=cfg_snapshot.get("quicknode_lp_tripwire_drop_pct", 40),
+        )
+        solana_feed.start()
+
+    for feed in evm_feeds.values():
+        feed.stop()
+    evm_feeds = {}
+    if cfg_snapshot.get("quicknode_mempool_enabled", True):
+        for chain_id, wss_url in (cfg_snapshot.get("quicknode_evm_endpoints") or {}).items():
+            wss_url = (wss_url or "").strip()
+            if not wss_url or chain_id not in qn.EVM_MEMPOOL_SUPPORTED_CHAINS:
+                continue
+            feed = qn.EvmMempoolFeed(
+                chain_id=chain_id,
+                wss_url=wss_url,
+                http_url=qn.wss_to_http(wss_url),
+                get_watched_addresses=(lambda ch=chain_id: dict(evm_watched_addresses.get(ch, {}))),
+                on_pending_hit=_on_evm_pending_hit,
+            )
+            feed.start()
+            evm_feeds[chain_id] = feed
+
 
 def run_cycle():
-    global last_cycle_ts, next_alert_id, last_funnel, cycle_count
+    global last_cycle_ts, last_funnel, cycle_count
 
     with lock:
         cfg_snapshot = dict(config)
@@ -165,10 +280,22 @@ def run_cycle():
     now = time.time()
 
     discovered = core.discover_candidates(cfg_snapshot.get("auto_discover", True), this_cycle)
+    with realtime_lock:
+        # New pool candidates the QuickNode real-time feed found since the
+        # last cycle (near-instant, vs. waiting for a DexScreener discovery
+        # sweep to surface the same token) - merged in here means they go
+        # through the exact same eligibility/scoring path as everything
+        # else, so a noisy false-positive candidate just fails eligibility
+        # or scores low, same as DexScreener's own discovery noise already
+        # does.
+        realtime_count = len(realtime_discovered)
+        discovered = discovered + realtime_discovered
+        realtime_discovered.clear()
     pool, funnel = core.build_tracked_pool(
         watchlist, discovered, known_universe_snapshot,
         retention_days=cfg_snapshot.get("known_universe_retention_days", 14),
     )
+    funnel["quicknode_discovered"] = realtime_count
 
     # Batch market-data fetches, grouped by chain (DexScreener's batch
     # endpoint is chain-scoped, up to 30 addresses per call) instead of one
@@ -197,6 +324,7 @@ def run_cycle():
     eligible_count = 0
     new_status = {}
     known_universe_updates = {}
+    evm_watch_addresses_this_cycle = {}  # chain_id -> {pair_address.lower(): key}, for the EVM mempool feed
 
     for key, (best, label, chain_id, token_address) in fetched.items():
         try:
@@ -221,6 +349,11 @@ def run_cycle():
             # market-data fetch, no extra API call needed.
             "websites": info.get("websites") or [],
             "socials": info.get("socials") or [],
+            # The DEX pair/pool account address itself (distinct from the
+            # token mint/contract address) - only used to point the
+            # QuickNode real-time feed at the right account to watch, not
+            # part of scoring.
+            "pair_address": best.get("pairAddress") or "",
             "pair_created_at": (pair_created_ms / 1000) if pair_created_ms else now,
             "current_price": price,
             "price_change_m5_pct": (best.get("priceChange") or {}).get("m5"),
@@ -271,6 +404,23 @@ def run_cycle():
                 bundling = fresh_bundling
                 bundling_checked_at = now
 
+        # Creator-wallet reputation (Solana, via QuickNode's Metaplex DAS -
+        # see quicknode_realtime.get_creator_reputation). Cached
+        # indefinitely once found, unlike bundling: a mint's recorded
+        # creator is fixed metadata, not something that changes cycle to
+        # cycle. A None result isn't cached, so it's retried next cycle -
+        # same "don't lock in a transient failure" policy bundling uses.
+        creator_reputation = prior.get("creator_reputation")
+        if (
+            creator_reputation is None
+            and chain_id == "solana"
+            and cfg_snapshot.get("quicknode_das_enabled", True)
+            and cfg_snapshot.get("quicknode_solana_wss_url", "").strip()
+        ):
+            creator_reputation = qn.get_creator_reputation(
+                qn.wss_to_http(cfg_snapshot["quicknode_solana_wss_url"]), token_address
+            )
+
         known_universe_updates[key] = {
             "label": meta["label"],
             "first_seen": prior.get("first_seen", now),
@@ -279,7 +429,18 @@ def run_cycle():
             "all_time_high_mcap": max(prior.get("all_time_high_mcap", 0) or 0, market_cap),
             "bundling": bundling,
             "bundling_checked_at": bundling_checked_at,
+            "creator_reputation": creator_reputation,
         }
+
+        # Register this pool with whichever QuickNode real-time feeds are
+        # running - both are safe/cheap to call every cycle even when no
+        # feed is configured (solana_feed is None, or this chain has no
+        # EVM feed) and watch_pool() itself no-ops on a pool already being
+        # watched.
+        if solana_feed and chain_id == "solana" and meta["pair_address"] and cfg_snapshot.get("quicknode_lp_tripwire_enabled", True):
+            solana_feed.watch_pool(key, meta["pair_address"])
+        if chain_id in evm_feeds and meta["pair_address"]:
+            evm_watch_addresses_this_cycle.setdefault(chain_id, {})[meta["pair_address"].lower()] = key
 
         status = core.evaluate_token(history, meta, cfg_snapshot, now, all_time_high_price)
         status["platform"] = best.get("dexId", "")
@@ -288,6 +449,7 @@ def run_cycle():
         # a nested dict (or None when unavailable), which client-side sort
         # can't key off of directly.
         status["bundling_severity"] = bundling["severity"] if bundling else -1
+        status["creator_reputation"] = creator_reputation
         new_status[key] = status
 
         if status["score"] >= cfg_snapshot.get("alert_score_threshold", 70):
@@ -298,22 +460,11 @@ def run_cycle():
                     state["alerted"][key] = now
 
             if should_alert:
-                message = core.format_alert(key, status)
-                core.send_telegram(
-                    cfg_snapshot.get("telegram_bot_token", ""),
-                    cfg_snapshot.get("telegram_chat_id", ""),
-                    message,
-                )
-                with lock:
-                    alerts_feed.insert(0, {
-                        "id": next_alert_id,
-                        "key": key,
-                        "label": status["label"],
-                        "message": message,
-                        "ts": now,
-                    })
-                    next_alert_id += 1
-                    del alerts_feed[50:]  # keep feed bounded
+                push_alert(key, status["label"], core.format_alert(key, status))
+
+    with realtime_lock:
+        evm_watched_addresses.clear()
+        evm_watched_addresses.update(evm_watch_addresses_this_cycle)
 
     funnel["passed_eligibility"] = eligible_count
     funnel["scored"] = len(new_status)
@@ -378,6 +529,11 @@ def api_status():
         "last_cycle_ts": last_cycle_ts,
         "server_time": time.time(),
         "funnel": funnel,
+        "quicknode": {
+            "solana_configured": solana_feed is not None,
+            "solana_connected": solana_feed.is_connected() if solana_feed else False,
+            "evm_connected": {chain_id: feed.is_connected() for chain_id, feed in evm_feeds.items()},
+        },
     })
 
 
@@ -393,14 +549,25 @@ def api_get_config():
         return jsonify(config)
 
 
+QUICKNODE_CONFIG_KEYS = {
+    "quicknode_solana_wss_url", "quicknode_realtime_discovery_enabled", "quicknode_das_enabled",
+    "quicknode_lp_tripwire_enabled", "quicknode_lp_tripwire_drop_pct", "quicknode_evm_endpoints",
+    "quicknode_mempool_enabled",
+}
+
+
 @app.route("/api/config", methods=["POST"])
 def api_set_config():
     payload = request.get_json(force=True, silent=True) or {}
     with lock:
+        touched_quicknode = any(k in payload for k in QUICKNODE_CONFIG_KEYS)
         for k in DEFAULT_CONFIG:
             if k in payload:
                 config[k] = payload[k]
         save_json(CONFIG_FILE, config)
+        cfg_snapshot = dict(config)
+    if touched_quicknode:
+        init_quicknode_feeds(cfg_snapshot)
     return jsonify({"ok": True, "config": config})
 
 
@@ -589,6 +756,7 @@ def api_paper_reset():
 
 
 if __name__ == "__main__":
+    init_quicknode_feeds(config)
     t = threading.Thread(target=background_loop, daemon=True)
     t.start()
     app.run(host="127.0.0.1", port=5050, debug=False)

@@ -234,6 +234,13 @@
           <input type="text" id="cfg-telegram-chat" placeholder="e.g. 987654321">
         </label>
 
+        <label class="field">
+          <span>QuickNode Solana endpoint URL</span>
+          <input type="password" id="cfg-quicknode-solana" placeholder="wss://your-endpoint.solana-mainnet.quiknode.pro/token/ — leave blank to disable">
+        </label>
+        <p class="field-hint" id="quicknode-status-hint">Real-time layer: not connected.</p>
+        <p class="field-hint">Turns on three things once set: near-instant new-pool discovery (instead of waiting for a DexScreener sweep to surface it), a live LP-drain tripwire per tracked pool, and Solana creator-wallet reputation via Metaplex DAS. A 4th piece — EVM mempool early-warning on mainstream chains (ethereum/base/bsc/polygon/arbitrum/optimism/avalanche) — is config.json-only for now (<code>quicknode_evm_endpoints</code>, one WSS URL per chain), the same way <code>bundling_check_enabled</code> already is. See README "Real-time layer" for all of it, including the real cost/accuracy caveats.</p>
+
         <p class="field-hint">Eligibility (the bare-minimum liquidity/volume/market-cap floor a token needs to be scored at all — including a 5-minute volume floor and a live-buy-activity check, to keep dead pools out) is intentionally loose and lives in config.json directly — it's meant to exclude only obvious dust, not to pre-filter candidates the way the old hard thresholds did.</p>
 
         <div class="form-actions">

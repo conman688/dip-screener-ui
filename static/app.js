@@ -223,16 +223,33 @@ async function fetchStatus() {
     latestTokens = data.tokens;
     renderTable();
     renderFunnel(data.funnel);
+    renderQuicknodeStatus(data.quicknode);
   } catch (e) {
     statusText.textContent = 'Can\'t reach server';
     statusDot.className = 'dot paused';
   }
 }
 
+const quicknodeStatusHint = document.getElementById('quicknode-status-hint');
+function renderQuicknodeStatus(qn) {
+  if (!quicknodeStatusHint || !qn) return;
+  if (!qn.solana_configured) {
+    quicknodeStatusHint.textContent = 'Real-time layer: not connected (no endpoint URL set above).';
+    return;
+  }
+  const parts = [`Solana: ${qn.solana_connected ? 'connected' : 'reconnecting…'}`];
+  const evmEntries = Object.entries(qn.evm_connected || {});
+  if (evmEntries.length) {
+    parts.push(...evmEntries.map(([chain, ok]) => `${chain}: ${ok ? 'connected' : 'reconnecting…'}`));
+  }
+  quicknodeStatusHint.textContent = 'Real-time layer: ' + parts.join(' · ');
+}
+
 const funnelListEl = document.getElementById('funnel-list');
 const FUNNEL_LABELS = [
   ['watchlist', 'Your watchlist'],
   ['discovered_this_cycle', 'Discovered this cycle'],
+  ['quicknode_discovered', 'Found via QuickNode real-time feed'],
   ['carried_forward_from_history', 'Carried forward from earlier finds'],
   ['after_dedup', 'Unique tokens in pool'],
   ['fetched_market_data', 'Market data fetched'],
@@ -292,12 +309,32 @@ function renderTable() {
     // reports holder concentration + contract risk flags instead - same
     // severity/label scale, different underlying metric, so the tooltip
     // spells out which one produced the number.
+    // Creator-wallet reputation (Solana only, via QuickNode's Metaplex DAS
+    // - see quicknode_realtime.get_creator_reputation). Best-effort: only
+    // meaningful when the token's on-chain metadata actually names its
+    // real launching wallet as creator, which this code can't verify
+    // independently - see the README caveat. A wallet that's made a lot
+    // of other tokens is folded into the Bundling pill itself (not a
+    // separate column) since it's the same "how risky is this" question
+    // as bundling, just a different data source - and bumped to at least
+    // High severity when it crosses SERIAL_CREATOR_THRESHOLD, since a
+    // wallet that's spun up dozens of tokens before is a stronger rug
+    // signal than this specific token's own holder distribution.
+    const SERIAL_CREATOR_THRESHOLD = 15;
+    const creatorRep = t.creator_reputation;
+    const isSerialCreator = creatorRep && creatorRep.other_asset_count >= SERIAL_CREATOR_THRESHOLD;
+    const creatorNote = creatorRep
+      ? ` — creator wallet has made ${creatorRep.other_asset_count} other token(s) (best-effort, via Metaplex DAS)`
+      : '';
+
     const bundling = t.bundling;
     let bundlingHtml;
-    if (!bundling) {
+    if (!bundling && !creatorRep) {
       bundlingHtml = `<span class="bundling-pill bundling-unknown" title="No bundling/risk data - either an unsupported chain, or the check hasn't returned anything for this token yet">—</span>`;
+    } else if (!bundling) {
+      bundlingHtml = `<span class="bundling-pill ${isSerialCreator ? 'bundling-high' : 'bundling-unknown'}" title="No RugCheck/GoPlus data yet.${escapeHtml(creatorNote)}">${isSerialCreator ? 'Serial creator' : '—'}</span>`;
     } else {
-      const sevClass = bundling.label === 'Rugged' || bundling.label === 'Severe' ? 'bundling-severe'
+      let sevClass = bundling.label === 'Rugged' || bundling.label === 'Severe' ? 'bundling-severe'
         : bundling.label === 'High' ? 'bundling-high'
         : bundling.label === 'Moderate' ? 'bundling-moderate'
         : 'bundling-low';
@@ -310,6 +347,11 @@ function renderTable() {
         tooltip = `${bundling.insider_wallets} of ${bundling.total_holders} holders (${bundling.insider_pct}%) traced to a common funding wallet by RugCheck`
           + (bundling.rugged ? ' - RugCheck flags this token as already rugged' : '');
         pillText = `${bundling.label} ${bundling.insider_pct}%`;
+      }
+      tooltip += creatorNote;
+      if (isSerialCreator && sevClass !== 'bundling-severe') {
+        sevClass = 'bundling-high';
+        pillText += ' ⚠ serial creator';
       }
       bundlingHtml = `<span class="bundling-pill ${sevClass}" title="${escapeHtml(tooltip)}">${escapeHtml(pillText)}</span>`;
     }
@@ -429,7 +471,7 @@ function renderAlerts(alerts) {
   alertsFeed.innerHTML = alerts.map(a => `
     <div class="alert-item">
       <div class="alert-label">${escapeHtml(a.label)}</div>
-      <div class="alert-detail">Dip-and-recovery pattern confirmed</div>
+      <div class="alert-detail">${escapeHtml(a.message)}</div>
       <span class="alert-time">${timeAgo(a.ts)}</span>
     </div>
   `).join('');
@@ -723,6 +765,7 @@ async function loadConfig() {
   document.getElementById('cfg-retention-days').value = cfg.known_universe_retention_days;
   document.getElementById('cfg-telegram-token').value = cfg.telegram_bot_token;
   document.getElementById('cfg-telegram-chat').value = cfg.telegram_chat_id;
+  document.getElementById('cfg-quicknode-solana').value = cfg.quicknode_solana_wss_url || '';
   alertScoreThreshold = Number(cfg.alert_score_threshold) || 70;
 
   applyFiltersToInputs(FILTER_DEFAULTS);
@@ -739,6 +782,7 @@ settingsForm.addEventListener('submit', async (e) => {
     known_universe_retention_days: Number(document.getElementById('cfg-retention-days').value),
     telegram_bot_token: document.getElementById('cfg-telegram-token').value,
     telegram_chat_id: document.getElementById('cfg-telegram-chat').value,
+    quicknode_solana_wss_url: document.getElementById('cfg-quicknode-solana').value.trim(),
   };
 
   await fetch('/api/config', {
@@ -752,6 +796,7 @@ settingsForm.addEventListener('submit', async (e) => {
   saveNote.textContent = 'Saved';
   saveNote.classList.add('show');
   setTimeout(() => saveNote.classList.remove('show'), 2000);
+  fetchStatus();  // refresh the "Real-time layer: ..." hint once the new endpoint (dis)connects
 });
 
 updateSortIndicators();
